@@ -270,6 +270,10 @@ jobs:
 
       - name: Libraries.
         # No skip-release here: a Release build of Telegram needs Release libraries.
+        # Bounded below the 6h job limit on purpose: a job-level timeout is a hard
+        # cancel that can skip the cache saves below, throwing away hours of Qt.
+        # A step-level timeout fails the step instead and lets them run.
+        timeout-minutes: 285
         run: |
           %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent %QT_OPTION%
 
