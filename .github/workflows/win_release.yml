@@ -232,6 +232,10 @@ jobs:
           CODESIGN_PASSWORD: ${{ secrets.WIN_CODESIGN_PASSWORD }}
         run: |
           $release = "$env:TBUILD\$env:REPO_NAME\out\Release"
+          # Guard explicitly: an empty target list would make this step pass silently.
+          if (-not (Test-Path (Join-Path $release 'Telegram.exe'))) {
+            Write-Error "Telegram.exe is missing from $release"; exit 1
+          }
           $targets = @('Telegram.exe', 'Updater.exe') |
             ForEach-Object { Join-Path $release $_ } | Where-Object { Test-Path $_ }
 
@@ -254,21 +258,24 @@ jobs:
           $release = "$env:TBUILD\$env:REPO_NAME\out\Release"
           Set-Location $release
 
-          $args = @('-version', $env:AppVersion, '-path', 'Telegram.exe', '-path', 'Updater.exe')
+          # Not $args: that is an automatic variable in PowerShell.
+          $packerArgs = @('-version', $env:AppVersion, '-path', 'Telegram.exe', '-path', 'Updater.exe')
           $d3d = 'modules\x64\d3d\d3dcompiler_47.dll'
-          if (Test-Path $d3d) { $args += @('-path', $d3d) }
-          $args += @('-target', 'win64')
+          if (Test-Path $d3d) { $packerArgs += @('-path', $d3d) }
+          $packerArgs += @('-target', 'win64')
 
-          & .\Packer.exe @args
+          & .\Packer.exe @packerArgs
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-          $update = "tx64upd$env:AppVersion"
+          $update = "tx64upd${env:AppVersion}"
           if (-not (Test-Path $update)) { Write-Error "$update was not produced"; exit 1 }
           echo "Produced $update ($((Get-Item $update).Length) bytes)"
 
       - name: Create the installer.
         if: env.ONLY_CACHE == 'false'
         shell: pwsh
+        env:
+          CODESIGN_PASSWORD: ${{ secrets.WIN_CODESIGN_PASSWORD }}
         run: |
           choco install innosetup -y --no-progress
           $release = "$env:TBUILD\$env:REPO_NAME\out\Release"
@@ -288,9 +295,10 @@ jobs:
             $iss
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-          $setup = Join-Path $release "tsetup-x64.$env:AppVersionStrFull.exe"
+          $setup = Join-Path $release "tsetup-x64.${env:AppVersionStrFull}.exe"
           if (-not (Test-Path $setup)) { Write-Error "$setup was not produced"; exit 1 }
-          & $env:SIGNTOOL sign /f $env:CODESIGN_PFX /p "${{ secrets.WIN_CODESIGN_PASSWORD }}" /fd SHA256 $setup
+          & $env:SIGNTOOL sign /f $env:CODESIGN_PFX /p $env:CODESIGN_PASSWORD /fd SHA256 $setup
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Collect the artifacts.
         if: env.ONLY_CACHE == 'false'
@@ -310,7 +318,7 @@ jobs:
           }
 
           Set-Location $deploy
-          $portable = "tportable-x64.$env:AppVersionStrFull.zip"
+          $portable = "tportable-x64.${env:AppVersionStrFull}.zip"
           & 7z a -mx9 $portable Telegram\
           if ($LASTEXITCODE -ne 0) { exit 1 }
           & 7z t $portable
@@ -318,8 +326,8 @@ jobs:
           Remove-Item -Recurse -Force $portableDir
 
           foreach ($name in @(
-            "tsetup-x64.$env:AppVersionStrFull.exe",
-            "tx64upd$env:AppVersion",
+            "tsetup-x64.${env:AppVersionStrFull}.exe",
+            "tx64upd${env:AppVersion}",
             'Telegram.exe', 'Updater.exe', 'Telegram.pdb', 'Updater.pdb')) {
             $path = Join-Path $release $name
             if (Test-Path $path) { Copy-Item $path $deploy } else { Write-Host "missing: $name" }
