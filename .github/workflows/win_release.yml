@@ -93,6 +93,47 @@ jobs:
           }
           Show-Free 'after'
 
+      # A Release build of Telegram exhausts the runner's commit limit while
+      # compiling the generated Qt resource files (C1076 / C3859). Upstream sends
+      # heavy builds to a 16-core runner instead; here the pagefile has to cover
+      # it. Verified rather than assumed: a pagefile change that needs a reboot
+      # would silently do nothing and cost a two hour build to find out.
+      - name: Enlarge the pagefile.
+        shell: pwsh
+        run: |
+          function Commit-GB {
+            [math]::Round((Get-CimInstance Win32_OperatingSystem).TotalVirtualMemorySize / 1MB, 1)
+          }
+          $before = Commit-GB
+          Write-Host "commit limit before: $before GB"
+          Get-PSDrive -PSProvider FileSystem |
+            Where-Object { $_.Free -gt 0 } |
+            ForEach-Object { Write-Host ("drive {0}: {1:N1} GB free" -f $_.Name, ($_.Free / 1GB)) }
+
+          $cs = Get-CimInstance Win32_ComputerSystem
+          if ($cs.AutomaticManagedPagefile) {
+            Set-CimInstance -InputObject $cs -Property @{AutomaticManagedPagefile = $false}
+            Write-Host 'disabled the automatically managed pagefile'
+          }
+
+          $sizeMb = 24576
+          $target = 'C:\pagefile.sys'
+          $existing = Get-CimInstance Win32_PageFileSetting -Filter "Name='C:\\\\pagefile.sys'" -ErrorAction SilentlyContinue
+          if ($existing) {
+            Set-CimInstance -InputObject $existing -Property @{InitialSize = $sizeMb; MaximumSize = $sizeMb}
+            Write-Host "resized $target to $sizeMb MB"
+          } else {
+            New-CimInstance -ClassName Win32_PageFileSetting -Property @{Name = $target; InitialSize = $sizeMb; MaximumSize = $sizeMb} | Out-Null
+            Write-Host "created $target at $sizeMb MB"
+          }
+
+          $after = Commit-GB
+          Write-Host "commit limit after: $after GB"
+          if ($after -le $before + 1) {
+            Write-Error "pagefile change did not take effect (still $after GB) - it likely needs a reboot, so a different mitigation is required"
+            exit 1
+          }
+
       - name: Prepare directories.
         run: |
           mkdir %userprofile%\TBuild\Libraries
