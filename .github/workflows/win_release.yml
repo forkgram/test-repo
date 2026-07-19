@@ -158,17 +158,63 @@ jobs:
           nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
           nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
 
+      # breakpad's dump_syms needs ATL, and its gyp asks for the legacy
+      # $(VCInstallDir)atlmfc path that modern Visual Studio no longer uses.
+      # Putting the real atlmfc on INCLUDE/LIB is enough: CL falls back to
+      # those after the explicit /I paths miss.
+      - name: Make ATL available.
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          Write-Host "Visual Studio: $vs"
+
+          function Find-AtlRoot {
+            # Prefer the ATL shipped with the toolset we actually compile with.
+            if ($env:VCToolsInstallDir) {
+              $preferred = Join-Path $env:VCToolsInstallDir 'atlmfc'
+              if (Test-Path (Join-Path $preferred 'include\atlbase.h')) { return $preferred }
+            }
+            $found = Get-ChildItem "$vs\VC\Tools\MSVC\*\atlmfc\include\atlbase.h" -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            if ($found) { return (Split-Path (Split-Path $found.FullName -Parent) -Parent) }
+            return $null
+          }
+
+          $atlRoot = Find-AtlRoot
+          if (-not $atlRoot) {
+            Write-Host 'ATL is not installed, adding the component.'
+            $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
+            $p = Start-Process -FilePath $installer -Wait -PassThru -ArgumentList `
+              'modify', '--installPath', "`"$vs`"", `
+              '--add', 'Microsoft.VisualStudio.Component.VC.ATL', `
+              '--quiet', '--norestart', '--nocache'
+            if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
+              Write-Error "vs_installer failed with $($p.ExitCode)"; exit 1
+            }
+            $atlRoot = Find-AtlRoot
+          }
+          if (-not $atlRoot) { Write-Error 'atlbase.h still not found'; exit 1 }
+
+          Write-Host "ATL root: $atlRoot"
+          echo "INCLUDE=$env:INCLUDE;$atlRoot\include" >> $env:GITHUB_ENV
+          echo "LIB=$env:LIB;$atlRoot\lib\x64" >> $env:GITHUB_ENV
+
+      # actions/cache declares post-if: success(), so a failing job saves nothing.
+      # Preparing the libraries takes hours and makes incremental progress, so
+      # restore and save are split to bank that progress even on failure. Cache
+      # entries are immutable, hence the per-run key plus a prefix restore-key.
       - name: ThirdParty cache.
         id: cache-third-party
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.TBUILD }}\ThirdParty
-          key: ${{ runner.OS }}-x64-third-party-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-x64-third-party-
+          key: ${{ runner.OS }}-x64-third-party-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.OS }}-x64-third-party-${{ env.CACHE_KEY }}-
 
       - name: Libraries cache.
         id: cache-libs
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: |
             ${{ env.LibrariesPath }}\*
@@ -176,18 +222,18 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-x64-libs-rel-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-x64-libs-rel-
+          key: ${{ runner.OS }}-x64-libs-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.OS }}-x64-libs-rel-${{ env.CACHE_KEY }}-
 
       - name: Qt cache.
         id: cache-qt
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-x64-qt-rel-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-x64-qt-rel-
+          key: ${{ runner.OS }}-x64-qt-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.OS }}-x64-qt-rel-${{ env.CACHE_KEY }}-
 
       - name: Libraries.
         # No skip-release here: a Release build of Telegram needs Release libraries.
@@ -195,8 +241,39 @@ jobs:
           %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent
 
       - name: Free up some disk space.
+        if: always()
         shell: bash
-        run: find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' ')' -type f ')' -o -empty ')' -delete
+        run: |
+          [ -d "$LibrariesPath" ] || { echo "nothing to clean up"; exit 0; }
+          find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' ')' -type f ')' -o -empty ')' -delete || true
+
+      - name: Save ThirdParty cache.
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.TBUILD }}\ThirdParty
+          key: ${{ runner.OS }}-x64-third-party-${{ env.CACHE_KEY }}-${{ github.run_id }}
+
+      - name: Save libraries cache.
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.OS }}-x64-libs-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
+
+      - name: Save Qt cache.
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.OS }}-x64-qt-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
 
       - name: Telegram Desktop build.
         if: env.ONLY_CACHE == 'false'
