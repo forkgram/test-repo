@@ -8,9 +8,9 @@ on:
         type: boolean
         default: false
       qt6:
-        description: 'Build against Qt 6. Broken in this fork: the stage copies from a qt6windows7 tree nothing creates.'
+        description: 'Build against Qt 6. Required: lib_ui uses Qt 6 only accessibility API.'
         type: boolean
-        default: false
+        default: true
       lto:
         description: 'Enable LTO (official builds use it, links much slower).'
         type: boolean
@@ -41,10 +41,11 @@ jobs:
       PREPARE_PATH: "Telegram/build/prepare/prepare.py"
       ONLY_CACHE: ${{ inputs.only_cache && 'true' || 'false' }}
       ENABLE_LTO: ${{ inputs.lto && 'true' || 'false' }}
-      # Qt 5.15 is what qt_version.py picks for x64 and the only version this
-      # fork actually builds: the Qt 6 stage xcopies %LIBS_DIR%\qt6windows7,
-      # which no stage produces. Both prepare.py and configure.py read the flag.
-      QT_OPTION: ${{ inputs.qt6 && 'qt6' || '' }}
+      # qt_version.py defaults x64 to Qt 5.15, but lib_ui calls the Qt 6 only
+      # accessibility API (QAccessibleAttributesInterface) with no version guard,
+      # so Qt 5 cannot compile this fork at all. Both prepare.py and configure.py
+      # read the flag, and on a tag push it has to stay on.
+      QT_OPTION: ${{ (github.event_name != 'workflow_dispatch' || inputs.qt6) && 'qt6' || '' }}
       PUBLISH_RELEASE: ${{ (inputs.publish_release || startsWith(github.ref, 'refs/tags/')) && 'true' || 'false' }}
 
     defaults:
@@ -243,7 +244,7 @@ jobs:
         with:
           path: ${{ env.TBUILD }}\ThirdParty
           key: ${{ runner.OS }}-x64-third-party-${{ env.CACHE_KEY }}-${{ github.run_id }}
-          restore-keys: ${{ runner.OS }}-x64-third-party-${{ env.CACHE_KEY }}-
+          restore-keys: ${{ runner.OS }}-x64-third-party-
 
       - name: Libraries cache.
         id: cache-libs
@@ -256,7 +257,7 @@ jobs:
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
           key: ${{ runner.OS }}-x64-libs-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
-          restore-keys: ${{ runner.OS }}-x64-libs-rel-${{ env.CACHE_KEY }}-
+          restore-keys: ${{ runner.OS }}-x64-libs-rel-
 
       - name: Qt cache.
         id: cache-qt
@@ -266,7 +267,7 @@ jobs:
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
           key: ${{ runner.OS }}-x64-${{ env.QT_OPTION == 'qt6' && 'qt6' || 'qt5' }}-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
-          restore-keys: ${{ runner.OS }}-x64-${{ env.QT_OPTION == 'qt6' && 'qt6' || 'qt5' }}-rel-${{ env.CACHE_KEY }}-
+          restore-keys: ${{ runner.OS }}-x64-${{ env.QT_OPTION == 'qt6' && 'qt6' || 'qt5' }}-rel-
 
       - name: Libraries.
         # No skip-release here: a Release build of Telegram needs Release libraries.
@@ -282,7 +283,7 @@ jobs:
         shell: bash
         run: |
           [ -d "$LibrariesPath" ] || { echo "nothing to clean up"; exit 0; }
-          find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' ')' -type f ')' -o -empty ')' -delete || true
+          find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -path '*/qt6windows7/*' ')' -type f ')' -o -empty ')' -delete || true
 
       - name: Save ThirdParty cache.
         if: always()
