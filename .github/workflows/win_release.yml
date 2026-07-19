@@ -365,8 +365,15 @@ jobs:
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
           key: ${{ runner.OS }}-x64-${{ env.QT_OPTION == 'qt6' && 'qt6' || 'qt5' }}-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
 
+      # cmake_helpers sets a bare /MP, so cl.exe forks one compiler per core and
+      # four of them compiling the generated qrc translation units exhaust the
+      # runner's 18.9 GB commit limit. _CL_ appends to the command line, where a
+      # later /MP2 overrides that /MP; --parallel bounds MSBuild's own project
+      # concurrency on top of it.
       - name: Telegram Desktop build.
         if: env.ONLY_CACHE == 'false'
+        env:
+          _CL_: /MP2
         run: |
           cd %TBUILD%\%REPO_NAME%\Telegram
 
@@ -376,10 +383,9 @@ jobs:
           -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
           -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF ^
           -D DESKTOP_APP_WIN7_COMPAT=ON ^
-          -D CMAKE_DISABLE_PRECOMPILE_HEADERS=ON ^
           %LTO_FLAG% || exit /b 1
 
-          cmake --build ..\out --config Release --target Telegram --parallel || exit /b 1
+          cmake --build ..\out --config Release --target Telegram --parallel 2 || exit /b 1
 
       - name: Set up the code signing certificate.
         if: env.ONLY_CACHE == 'false'
