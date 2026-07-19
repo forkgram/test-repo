@@ -323,7 +323,7 @@ jobs:
         shell: bash
         run: |
           [ -d "$LibrariesPath" ] || { echo "nothing to clean up"; exit 0; }
-          find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -path '*/qt6windows7/*' ')' -type f ')' -o -empty ')' -delete || true
+          find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -path '*/qt6windows7/*' -o -path '*/yy_thunks/*' ')' -type f ')' -o -empty ')' -delete || true
 
       - name: Save ThirdParty cache.
         if: always()
