@@ -53,6 +53,46 @@ jobs:
         shell: cmd
 
     steps:
+      # Qt 6 builds debug and release together with -force-debug-info, and the
+      # resulting PDBs exhaust the image's free space mid-link. Drop toolchains
+      # this build never touches. Perl and Python stay: OpenSSL needs Perl and
+      # configure.bat calls python off PATH.
+      - name: Free up runner disk space.
+        shell: pwsh
+        run: |
+          function Show-Free($label) {
+            Write-Host ("{0}: {1:N1} GB free" -f $label, ((Get-PSDrive C).Free / 1GB))
+          }
+          Show-Free 'before'
+
+          $targets = @(
+            'C:\Android',
+            'C:\Miniconda',
+            'C:\Julia',
+            'C:\Program Files\MongoDB',
+            'C:\Program Files\MySQL',
+            'C:\Program Files\PostgreSQL',
+            'C:\Program Files\Amazon',
+            'C:\Program Files\Microsoft SQL Server',
+            'C:\Program Files (x86)\Microsoft SQL Server',
+            'C:\Program Files (x86)\Google',
+            'C:\Program Files\R',
+            'C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk',
+            'C:\hostedtoolcache\windows\Ruby',
+            'C:\hostedtoolcache\windows\go',
+            'C:\hostedtoolcache\windows\node',
+            'C:\hostedtoolcache\windows\PyPy',
+            'C:\tools\kotlinc',
+            'C:\SeleniumWebDrivers'
+          )
+          foreach ($target in $targets) {
+            if (Test-Path $target) {
+              Remove-Item -Recurse -Force $target -ErrorAction SilentlyContinue
+              Write-Host "removed $target"
+            }
+          }
+          Show-Free 'after'
+
       - name: Prepare directories.
         run: |
           mkdir %userprofile%\TBuild\Libraries
