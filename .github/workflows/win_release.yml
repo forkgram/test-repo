@@ -93,10 +93,19 @@ jobs:
           }
           Show-Free 'after'
 
+      # The build tree has to live on D: - C: only has ~43 GB free after cleanup
+      # and a Release build of Telegram fills it, while D: carries ~147 GB. Keep
+      # the symlink though: actions/checkout refuses a path outside the workspace,
+      # and a short link target keeps Qt's deep paths clear of MAX_PATH.
       - name: Prepare directories.
         run: |
-          mkdir %userprofile%\TBuild\Libraries
-          mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
+          if exist D:\ (
+            mkdir D:\TBuild\Libraries
+            mklink /d %GITHUB_WORKSPACE%\TBuild D:\TBuild
+          ) else (
+            mkdir %userprofile%\TBuild\Libraries
+            mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
+          )
           echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
           echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries\win64>>%GITHUB_ENV%
 
