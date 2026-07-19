@@ -1597,6 +1597,13 @@ win:
     jom -j%NUMBER_OF_PROCESSORS% install
 """)
 else: # qt > '6'
+    stage('qt6windows7', """
+win:
+    git clone https://github.com/qr243vbi/qt6windows7.git
+    cd qt6windows7
+    git checkout aa73dc1aa33989d09e5823532bccb1d31e39bb64
+""")
+
     branch = 'v$QT' + ('-lts-lgpl' if qt.startswith('6.2.') else '')
     stage('qt_' + qt, """
     git clone -b """ + branch + """ https://github.com/qt/qt5.git qt_$QT
