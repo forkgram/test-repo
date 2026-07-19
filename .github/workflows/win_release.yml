@@ -158,10 +158,11 @@ jobs:
           nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
           nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
 
-      # breakpad's dump_syms needs ATL, and its gyp asks for the legacy
-      # $(VCInstallDir)atlmfc path that modern Visual Studio no longer uses.
-      # Putting the real atlmfc on INCLUDE/LIB is enough: CL falls back to
-      # those after the explicit /I paths miss.
+      # breakpad's dump_syms.vcxproj compiles with /I"$(VCInstallDir)atlmfc\include",
+      # a layout Visual Studio has dropped: ATL now lives under the versioned
+      # toolset directory. Extending INCLUDE does not reach CL, because MSBuild
+      # rebuilds INCLUDE from $(IncludePath) and discards the inherited value,
+      # so the legacy path itself has to exist.
       - name: Make ATL available.
         shell: pwsh
         run: |
@@ -197,8 +198,22 @@ jobs:
           if (-not $atlRoot) { Write-Error 'atlbase.h still not found'; exit 1 }
 
           Write-Host "ATL root: $atlRoot"
-          echo "INCLUDE=$env:INCLUDE;$atlRoot\include" >> $env:GITHUB_ENV
-          echo "LIB=$env:LIB;$atlRoot\lib\x64" >> $env:GITHUB_ENV
+
+          $legacy = Join-Path $vs 'VC\atlmfc'
+          if (Test-Path $legacy) {
+            Write-Host "$legacy already exists"
+          } else {
+            New-Item -ItemType Junction -Path $legacy -Target $atlRoot | Out-Null
+            Write-Host "Linked $legacy -> $atlRoot"
+          }
+
+          # Verify rather than trust: this step passing while the header stays
+          # unreachable is what cost the previous run.
+          foreach ($header in @('atlbase.h', 'atlcomcli.h')) {
+            $probe = Join-Path $legacy "include\$header"
+            if (-not (Test-Path $probe)) { Write-Error "$header unreachable at $probe"; exit 1 }
+            Write-Host "found $probe"
+          }
 
       # actions/cache declares post-if: success(), so a failing job saves nothing.
       # Preparing the libraries takes hours and makes incremental progress, so
