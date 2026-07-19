@@ -8,9 +8,9 @@ on:
         type: boolean
         default: false
       qt6:
-        description: 'Build against Qt 6 (off falls back to Qt 5.15, what x64 defaults to).'
+        description: 'Build against Qt 6. Broken in this fork: the stage copies from a qt6windows7 tree nothing creates.'
         type: boolean
-        default: true
+        default: false
       lto:
         description: 'Enable LTO (official builds use it, links much slower).'
         type: boolean
@@ -41,9 +41,10 @@ jobs:
       PREPARE_PATH: "Telegram/build/prepare/prepare.py"
       ONLY_CACHE: ${{ inputs.only_cache && 'true' || 'false' }}
       ENABLE_LTO: ${{ inputs.lto && 'true' || 'false' }}
-      # qt_version.py picks Qt 5.15 for x64 unless it sees this, but official
-      # 64-bit builds ship Qt 6. Both prepare.py and configure.py need the flag.
-      QT_OPTION: ${{ (github.event_name != 'workflow_dispatch' || inputs.qt6) && 'qt6' || '' }}
+      # Qt 5.15 is what qt_version.py picks for x64 and the only version this
+      # fork actually builds: the Qt 6 stage xcopies %LIBS_DIR%\qt6windows7,
+      # which no stage produces. Both prepare.py and configure.py read the flag.
+      QT_OPTION: ${{ inputs.qt6 && 'qt6' || '' }}
       PUBLISH_RELEASE: ${{ (inputs.publish_release || startsWith(github.ref, 'refs/tags/')) && 'true' || 'false' }}
 
     defaults:
