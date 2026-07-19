@@ -206,19 +206,29 @@ jobs:
 
           Write-Host "ATL root: $atlRoot"
 
+          # Two different lookups have to be satisfied. The compiler gets the
+          # headers from the /I that gyp hardcodes to $(VCInstallDir)atlmfc, while
+          # the linker resolves atls.lib through MSBuild's $(LibraryPath), which
+          # points into $(VCToolsInstallDir)atlmfc - and the 14.44 toolset we
+          # compile with ships no ATL at all.
           $legacy = Join-Path $vs 'VC\atlmfc'
-          if (Test-Path $legacy) {
-            Write-Host "$legacy already exists"
-          } else {
-            New-Item -ItemType Junction -Path $legacy -Target $atlRoot | Out-Null
-            Write-Host "Linked $legacy -> $atlRoot"
+          $toolset = Join-Path $env:VCToolsInstallDir 'atlmfc'
+          foreach ($link in @($legacy, $toolset)) {
+            if (Test-Path $link) {
+              Write-Host "$link already exists"
+            } else {
+              New-Item -ItemType Junction -Path $link -Target $atlRoot | Out-Null
+              Write-Host "Linked $link -> $atlRoot"
+            }
           }
 
-          # Verify rather than trust: this step passing while the header stays
-          # unreachable is what cost the previous run.
-          foreach ($header in @('atlbase.h', 'atlcomcli.h')) {
-            $probe = Join-Path $legacy "include\$header"
-            if (-not (Test-Path $probe)) { Write-Error "$header unreachable at $probe"; exit 1 }
+          # Verify rather than trust: this step passing while ATL stayed
+          # unreachable is what cost the previous two runs.
+          foreach ($probe in @(
+            (Join-Path $legacy 'include\atlbase.h'),
+            (Join-Path $legacy 'include\atlcomcli.h'),
+            (Join-Path $toolset 'lib\x64\atls.lib'))) {
+            if (-not (Test-Path $probe)) { Write-Error "unreachable: $probe"; exit 1 }
             Write-Host "found $probe"
           }
 
