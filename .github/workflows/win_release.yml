@@ -309,6 +309,18 @@ jobs:
           key: ${{ runner.OS }}-x64-${{ env.QT_OPTION == 'qt6' && 'qt6' || 'qt5' }}-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
           restore-keys: ${{ runner.OS }}-x64-${{ env.QT_OPTION == 'qt6' && 'qt6' || 'qt5' }}-rel-
 
+      # prepare.py trusts cache_keys alone, so a restored cache that lost an
+      # artifact is reported as built and never refetched. Drop the key when the
+      # artifact is missing and let the stage run again.
+      - name: Heal stale cache keys.
+        shell: bash
+        run: |
+          [ -d "$LibrariesPath" ] || exit 0
+          if [ ! -f "$LibrariesPath/yy_thunks/objs/x64/YY_Thunks_for_Win7.obj" ]; then
+            rm -f "$LibrariesPath"/cache_keys/yy_thunks*
+            echo "yy_thunks object missing, dropped its cache key"
+          fi
+
       - name: Libraries.
         # No skip-release here: a Release build of Telegram needs Release libraries.
         # Bounded below the 6h job limit on purpose: a job-level timeout is a hard
