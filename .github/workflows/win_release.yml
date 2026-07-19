@@ -1,0 +1,352 @@
+name: Windows x64 Release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      only_cache:
+        description: 'Only prepare libraries and warm the cache.'
+        type: boolean
+        default: false
+      lto:
+        description: 'Enable LTO (official builds use it, links much slower).'
+        type: boolean
+        default: false
+      publish_release:
+        description: 'Publish a GitHub Release with the artifacts.'
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: win-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+
+  windows-release:
+    name: Windows x64 Release
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    env:
+      PREPARE_PATH: "Telegram/build/prepare/prepare.py"
+      ONLY_CACHE: ${{ inputs.only_cache && 'true' || 'false' }}
+      ENABLE_LTO: ${{ inputs.lto && 'true' || 'false' }}
+      PUBLISH_RELEASE: ${{ (inputs.publish_release || startsWith(github.ref, 'refs/tags/')) && 'true' || 'false' }}
+
+    defaults:
+      run:
+        shell: cmd
+
+    steps:
+      - name: Prepare directories.
+        run: |
+          mkdir %userprofile%\TBuild\Libraries
+          mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
+          echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
+          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries\win64>>%GITHUB_ENV%
+
+      - name: Get repository name.
+        shell: bash
+        run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
+
+      - name: Clone.
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}
+
+      - name: First set up.
+        shell: bash
+        run: |
+          DOCPATH=$TBUILD/$REPO_NAME/docs/building-win.md
+          SDK="$(grep "SDK version" $DOCPATH | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/')"
+          echo "SDK=$SDK" >> $GITHUB_ENV
+
+          sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake
+
+          echo "$(sha256sum $TBUILD/$REPO_NAME/$PREPARE_PATH | awk '{ print $1 }')" >> CACHE_KEY.txt
+          echo "$SDK" >> CACHE_KEY.txt
+          # Release libraries are built too, so these caches must not collide with win.yml.
+          echo "release" >> CACHE_KEY.txt
+          echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
+
+          echo "Configurate git for cherry-picks."
+          git config --global user.email "you@example.com"
+          git config --global user.name "Sample"
+
+      - name: Read version.
+        shell: bash
+        run: |
+          awk 'NF { print $1"="$2 }' $TBUILD/$REPO_NAME/Telegram/build/version >> $GITHUB_ENV
+          source <(awk 'NF { print $1"="$2 }' $TBUILD/$REPO_NAME/Telegram/build/version)
+
+          if [ "$AlphaVersion" != "0" ]; then
+            echo "AppVersionStrFull=${AppVersionStr}_${AlphaVersion}" >> $GITHUB_ENV
+          elif [ "$BetaChannel" != "0" ]; then
+            echo "AppVersionStrFull=${AppVersionStr}.beta" >> $GITHUB_ENV
+          else
+            echo "AppVersionStrFull=${AppVersionStr}" >> $GITHUB_ENV
+          fi
+          echo "Building version $AppVersionStr ($AppVersion)."
+
+          if [ "$ENABLE_LTO" == "true" ]; then
+            echo "LTO_FLAG=-D DESKTOP_APP_ENABLE_LTO=ON" >> $GITHUB_ENV
+          else
+            echo "LTO_FLAG=" >> $GITHUB_ENV
+          fi
+
+      - name: Set up DesktopPrivate.
+        shell: bash
+        env:
+          API_ID: ${{ secrets.TDESKTOP_API_ID }}
+          API_HASH: ${{ secrets.TDESKTOP_API_HASH }}
+          PACKER_KEY: ${{ secrets.PACKER_PRIVATE_KEY }}
+          PACKER_BETA_KEY: ${{ secrets.PACKER_PRIVATE_BETA_KEY }}
+          ALPHA_KEY: ${{ secrets.ALPHA_PRIVATE_KEY }}
+        run: |
+          set -e
+          python3 - <<'PY'
+          import os, pathlib
+
+          private = pathlib.Path(os.environ['TBUILD']) / 'DesktopPrivate'
+          private.mkdir(parents=True, exist_ok=True)
+
+          def literal(name, pem, static=False):
+              lines = [l.strip() for l in pem.strip().splitlines() if l.strip()]
+              body = ''.join(l + '\\n\\\n' for l in lines[:-1]) + lines[-1] + '\\\n'
+              return '%sconst char *%s = "\\\n%s";\n' % ('static ' if static else '', name, body)
+
+          # configure.py only regex-scans this one for the API credentials.
+          (private / 'custom_api_id.h').write_text(
+              'static const int32 ApiId = %s;\n'
+              'static const char *ApiHash = "%s";\n'
+              % (os.environ['API_ID'], os.environ['API_HASH']))
+
+          # packer.cpp declares both of these extern, so they must be defined here.
+          (private / 'packer_private.h').write_text(
+              literal('PrivateKey', os.environ['PACKER_KEY'])
+              + '\n'
+              + literal('PrivateBetaKey', os.environ['PACKER_BETA_KEY']))
+
+          # config.h defines this one static in its fallback branch, so match that.
+          (private / 'alpha_private.h').write_text(
+              literal('AlphaPrivateKey', os.environ['ALPHA_KEY'], static=True))
+          PY
+
+          # Presence of this file is what makes run_cmake.py pass
+          # -DDESKTOP_APP_SPECIAL_TARGET, which is what builds Packer.
+          echo "win64" > $TBUILD/$REPO_NAME/Telegram/build/target
+
+          echo "DesktopPrivate contents:"
+          ls -l $TBUILD/DesktopPrivate
+
+      - uses: Eden-CI/msvc-dev-cmd@master
+        name: Native Tools Command Prompt.
+        with:
+          arch: x64
+          sdk: ${{ env.SDK }}
+          toolset: '14.44'
+
+      - name: NuGet sources.
+        run: |
+          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
+          nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
+
+      - name: ThirdParty cache.
+        id: cache-third-party
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.TBUILD }}\ThirdParty
+          key: ${{ runner.OS }}-x64-third-party-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-x64-third-party-
+
+      - name: Libraries cache.
+        id: cache-libs
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.OS }}-x64-libs-rel-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-x64-libs-rel-
+
+      - name: Qt cache.
+        id: cache-qt
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.OS }}-x64-qt-rel-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-x64-qt-rel-
+
+      - name: Libraries.
+        # No skip-release here: a Release build of Telegram needs Release libraries.
+        run: |
+          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent
+
+      - name: Free up some disk space.
+        shell: bash
+        run: find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' ')' -type f ')' -o -empty ')' -delete
+
+      - name: Telegram Desktop build.
+        if: env.ONLY_CACHE == 'false'
+        run: |
+          cd %TBUILD%\%REPO_NAME%\Telegram
+
+          call configure.bat ^
+          -D CMAKE_CONFIGURATION_TYPES=Release ^
+          -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
+          -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF ^
+          %LTO_FLAG% || exit /b 1
+
+          cmake --build ..\out --config Release --target Telegram --parallel || exit /b 1
+
+      - name: Set up the code signing certificate.
+        if: env.ONLY_CACHE == 'false'
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String("${{ secrets.WIN_CODESIGN_PFX }}"))
+          echo "CODESIGN_PFX=$pfx" >> $env:GITHUB_ENV
+
+          $tool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $tool) { Write-Error 'signtool.exe not found'; exit 1 }
+          echo "SIGNTOOL=$($tool.FullName)" >> $env:GITHUB_ENV
+          echo "Using $($tool.FullName)"
+
+      - name: Sign the binaries.
+        if: env.ONLY_CACHE == 'false'
+        shell: pwsh
+        env:
+          CODESIGN_PASSWORD: ${{ secrets.WIN_CODESIGN_PASSWORD }}
+        run: |
+          $release = "$env:TBUILD\$env:REPO_NAME\out\Release"
+          $targets = @('Telegram.exe', 'Updater.exe') |
+            ForEach-Object { Join-Path $release $_ } | Where-Object { Test-Path $_ }
+
+          foreach ($target in $targets) {
+            # Timestamping is what keeps a signature valid past certificate expiry.
+            & $env:SIGNTOOL sign /f $env:CODESIGN_PFX /p $env:CODESIGN_PASSWORD `
+              /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $target
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Timestamping failed for $target, signing without a timestamp."
+              & $env:SIGNTOOL sign /f $env:CODESIGN_PFX /p $env:CODESIGN_PASSWORD /fd SHA256 $target
+              if ($LASTEXITCODE -ne 0) { exit 1 }
+            }
+          }
+          foreach ($target in $targets) { & $env:SIGNTOOL verify /pa /v $target }
+
+      - name: Pack the update file.
+        if: env.ONLY_CACHE == 'false'
+        shell: pwsh
+        run: |
+          $release = "$env:TBUILD\$env:REPO_NAME\out\Release"
+          Set-Location $release
+
+          $args = @('-version', $env:AppVersion, '-path', 'Telegram.exe', '-path', 'Updater.exe')
+          $d3d = 'modules\x64\d3d\d3dcompiler_47.dll'
+          if (Test-Path $d3d) { $args += @('-path', $d3d) }
+          $args += @('-target', 'win64')
+
+          & .\Packer.exe @args
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          $update = "tx64upd$env:AppVersion"
+          if (-not (Test-Path $update)) { Write-Error "$update was not produced"; exit 1 }
+          echo "Produced $update ($((Get-Item $update).Length) bytes)"
+
+      - name: Create the installer.
+        if: env.ONLY_CACHE == 'false'
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $release = "$env:TBUILD\$env:REPO_NAME\out\Release"
+          $iss = "$env:TBUILD\$env:REPO_NAME\Telegram\build\setup.iss"
+
+          $iscc = Get-ChildItem 'C:\Program Files*\Inno Setup*\ISCC.exe' -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $iscc) { Write-Error 'ISCC.exe not found'; exit 1 }
+          echo "Using $($iscc.FullName)"
+
+          & $iscc.FullName `
+            "/dMyAppVersion=$env:AppVersionStrSmall" `
+            "/dMyAppVersionZero=$env:AppVersionStr" `
+            "/dMyAppVersionFull=$env:AppVersionStrFull" `
+            "/dReleasePath=$release" `
+            "/dMyBuildTarget=win64" `
+            $iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          $setup = Join-Path $release "tsetup-x64.$env:AppVersionStrFull.exe"
+          if (-not (Test-Path $setup)) { Write-Error "$setup was not produced"; exit 1 }
+          & $env:SIGNTOOL sign /f $env:CODESIGN_PFX /p "${{ secrets.WIN_CODESIGN_PASSWORD }}" /fd SHA256 $setup
+
+      - name: Collect the artifacts.
+        if: env.ONLY_CACHE == 'false'
+        shell: pwsh
+        run: |
+          $release = "$env:TBUILD\$env:REPO_NAME\out\Release"
+          $deploy = Join-Path $env:GITHUB_WORKSPACE 'deploy'
+          $portableDir = Join-Path $deploy 'Telegram'
+          New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
+
+          Copy-Item (Join-Path $release 'Telegram.exe') $portableDir
+          $d3d = Join-Path $release 'modules\x64\d3d\d3dcompiler_47.dll'
+          if (Test-Path $d3d) {
+            $modules = Join-Path $portableDir 'modules\x64\d3d'
+            New-Item -ItemType Directory -Path $modules -Force | Out-Null
+            Copy-Item $d3d $modules
+          }
+
+          Set-Location $deploy
+          $portable = "tportable-x64.$env:AppVersionStrFull.zip"
+          & 7z a -mx9 $portable Telegram\
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & 7z t $portable
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Remove-Item -Recurse -Force $portableDir
+
+          foreach ($name in @(
+            "tsetup-x64.$env:AppVersionStrFull.exe",
+            "tx64upd$env:AppVersion",
+            'Telegram.exe', 'Updater.exe', 'Telegram.pdb', 'Updater.pdb')) {
+            $path = Join-Path $release $name
+            if (Test-Path $path) { Copy-Item $path $deploy } else { Write-Host "missing: $name" }
+          }
+          Get-ChildItem $deploy | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v7
+        name: Upload the artifacts.
+        if: env.ONLY_CACHE == 'false'
+        with:
+          name: Telegram x64 Release ${{ env.AppVersionStrFull }}
+          path: deploy\
+
+      - name: Publish the release.
+        if: env.ONLY_CACHE == 'false' && env.PUBLISH_RELEASE == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [ "$TAG" == "$GITHUB_REF" ]; then
+            TAG="v$AppVersionStrFull"
+            gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
+              --target "$GITHUB_SHA" --title "$AppVersionStrFull" --notes "Windows x64 build of $AppVersionStrFull."
+          else
+            gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
+              --title "$AppVersionStrFull" --notes "Windows x64 build of $AppVersionStrFull."
+          fi
+          gh release upload "$TAG" deploy/* --clobber
