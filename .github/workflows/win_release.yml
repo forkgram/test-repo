@@ -116,9 +116,18 @@ jobs:
             Write-Host 'disabled the automatically managed pagefile'
           }
 
-          $sizeMb = 24576
-          $target = 'C:\pagefile.sys'
-          $existing = Get-CimInstance Win32_PageFileSetting -Filter "Name='C:\\\\pagefile.sys'" -ErrorAction SilentlyContinue
+          # Win32_PageFileSetting types its sizes as uint32 and CIM rejects
+          # anything else, so cast rather than pass a plain integer.
+          $sizeMb = [uint32]32768
+          $drive = Get-PSDrive -PSProvider FileSystem |
+            Where-Object { $_.Name -in @('C', 'D') -and ($_.Free / 1GB) -gt 40 } |
+            Sort-Object Free -Descending | Select-Object -First 1
+          if (-not $drive) { Write-Error 'no drive with enough room for a pagefile'; exit 1 }
+          $target = "$($drive.Name):\pagefile.sys"
+
+          # Match by name in PowerShell: the WQL filter needs doubled backslashes
+          # and silently matches nothing when they are off by one.
+          $existing = Get-CimInstance Win32_PageFileSetting | Where-Object { $_.Name -eq $target }
           if ($existing) {
             Set-CimInstance -InputObject $existing -Property @{InitialSize = $sizeMb; MaximumSize = $sizeMb}
             Write-Host "resized $target to $sizeMb MB"
