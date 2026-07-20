@@ -411,8 +411,8 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}\out
-          key: ${{ runner.OS }}-${{ matrix.arch }}-out-rel-${{ env.CACHE_KEY }}-${{ hashFiles('.github/workflows/win_release.yml') }}-${{ github.run_id }}
-          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-out-rel-${{ env.CACHE_KEY }}-${{ hashFiles('.github/workflows/win_release.yml') }}-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-out-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-out-rel-${{ env.CACHE_KEY }}-
 
       - name: Telegram Desktop build.
         if: env.ONLY_CACHE == 'false'
@@ -426,11 +426,21 @@ jobs:
 
           rem Re-running cmake rewrites the .vcxproj files, and the fresh
           rem timestamps make MSBuild rebuild everything - which throws away the
-          rem restored build tree. Configure only when there is nothing to reuse.
-          if exist ..\out\CMakeCache.txt (
-            echo Build tree already configured, skipping configure.
+          rem restored build tree. Reuse the tree when it was configured with the
+          rem same flags, and record them so a changed flag still reconfigures.
+          set "CFG_FLAGS=qt=%QT_OPTION% lto=%LTO_FLAG% target=%BUILD_TARGET% win7=on nodebug=1"
+          set "CFG_MARKER=..\out\.ci_configure_flags"
+          set "REUSE_TREE=0"
+          if exist ..\out\CMakeCache.txt if exist "%CFG_MARKER%" (
+            for /f "usebackq delims=" %%a in ("%CFG_MARKER%") do (
+              if "%%a"=="%CFG_FLAGS%" set "REUSE_TREE=1"
+            )
+          )
+          if "%REUSE_TREE%"=="1" (
+            echo Reusing the configured build tree.
             goto :build
           )
+          echo Configuring the build tree.
 
           call configure.bat ^
           %QT_OPTION% ^
@@ -441,6 +451,8 @@ jobs:
           -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
           %LTO_FLAG% || exit /b 1
 
+          > "%CFG_MARKER%" echo %CFG_FLAGS%
+
           :build
           cmake --build ..\out --config Release --target Telegram --parallel 2 || exit /b 1
 
@@ -449,7 +461,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}\out
-          key: ${{ runner.OS }}-${{ matrix.arch }}-out-rel-${{ env.CACHE_KEY }}-${{ hashFiles('.github/workflows/win_release.yml') }}-${{ github.run_id }}
+          key: ${{ runner.OS }}-${{ matrix.arch }}-out-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
 
       - name: Set up the code signing certificate.
         if: env.ONLY_CACHE == 'false'
