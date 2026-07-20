@@ -382,7 +382,10 @@ jobs:
       - name: Telegram Desktop build.
         if: env.ONLY_CACHE == 'false'
         env:
-          _CL_: /MP2
+          # Two compilers still exceed the 18.9 GB commit limit on ordinary
+          # translation units (C1060), so the Telegram target gets exactly one.
+          # --parallel stays at 2 for the earlier, lighter multi-project stages.
+          _CL_: /MP1
         run: |
           cd %TBUILD%\%REPO_NAME%\Telegram
 
