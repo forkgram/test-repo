@@ -379,6 +379,18 @@ jobs:
       # runner's 18.9 GB commit limit. _CL_ appends to the command line, where a
       # later /MP2 overrides that /MP; --parallel bounds MSBuild's own project
       # concurrency on top of it.
+      # Compiling Telegram costs about two hours, which makes every iteration on
+      # the packaging steps below absurdly expensive. MSBuild is incremental, so
+      # a restored build tree turns the build step into a no-op. Only viable now
+      # that dropping debug information shrank the tree enough to cache.
+      - name: Build tree cache.
+        if: env.ONLY_CACHE == 'false'
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}\out
+          key: ${{ runner.OS }}-x64-out-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.OS }}-x64-out-rel-
+
       - name: Telegram Desktop build.
         if: env.ONLY_CACHE == 'false'
         env:
@@ -399,6 +411,13 @@ jobs:
           %LTO_FLAG% || exit /b 1
 
           cmake --build ..\out --config Release --target Telegram --parallel 2 || exit /b 1
+
+      - name: Save build tree cache.
+        if: always() && env.ONLY_CACHE == 'false'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}\out
+          key: ${{ runner.OS }}-x64-out-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
 
       - name: Set up the code signing certificate.
         if: env.ONLY_CACHE == 'false'
@@ -438,7 +457,18 @@ jobs:
               if ($LASTEXITCODE -ne 0) { exit 1 }
             }
           }
-          foreach ($target in $targets) { & $env:SIGNTOOL verify /pa /v $target }
+          # Not signtool verify /pa: that demands a chain to a trusted root, which
+          # a self-signed certificate can never have. Check the signature is
+          # present and intact instead, and accept the untrusted-root verdict.
+          foreach ($target in $targets) {
+            $sig = Get-AuthenticodeSignature $target
+            $name = [IO.Path]::GetFileName($target)
+            if (-not $sig.SignerCertificate) { Write-Error "$name carries no signature"; exit 1 }
+            if ($sig.Status -in @('NotSigned', 'HashMismatch')) {
+              Write-Error "$name signature is broken: $($sig.Status)"; exit 1
+            }
+            Write-Host "$name -> $($sig.Status), signed by $($sig.SignerCertificate.Subject)"
+          }
 
       - name: Pack the update file.
         if: env.ONLY_CACHE == 'false'
