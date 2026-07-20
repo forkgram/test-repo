@@ -567,13 +567,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
+          # The checkout lives in a subdirectory, so this step's working directory
+          # is not a git repository and gh cannot infer the repo. Name it outright.
+          R="$GITHUB_REPOSITORY"
           TAG="${GITHUB_REF#refs/tags/}"
           if [ "$TAG" == "$GITHUB_REF" ]; then
             TAG="v$AppVersionStrFull"
-            gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
+            gh release view "$TAG" -R "$R" >/dev/null 2>&1 || gh release create "$TAG" -R "$R" \
               --target "$GITHUB_SHA" --title "$AppVersionStrFull" --notes "Windows x64 build of $AppVersionStrFull."
           else
-            gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
+            gh release view "$TAG" -R "$R" >/dev/null 2>&1 || gh release create "$TAG" -R "$R" \
               --title "$AppVersionStrFull" --notes "Windows x64 build of $AppVersionStrFull."
           fi
-          gh release upload "$TAG" deploy/* --clobber
+          gh release upload "$TAG" deploy/* -R "$R" --clobber
