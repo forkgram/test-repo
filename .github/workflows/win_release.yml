@@ -596,7 +596,11 @@ jobs:
         if: env.ONLY_CACHE == 'false' && env.PUBLISH_RELEASE == 'true'
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          # In a fork GitHub refuses release creation even when the workflow token
+          # is granted contents: write, so publishing needs a personal token. Add a
+          # RELEASE_TOKEN secret with 'repo' scope to enable it; without one this
+          # step will fail on a fork, which is why publish_release defaults to off.
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
         run: |
           set -e
           # The checkout lives in a subdirectory, so this step's working directory
