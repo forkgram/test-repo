@@ -588,12 +588,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           Remove-Item -Recurse -Force $portableDir
 
+          # Only the distributable outputs. Updater.exe already ships inside the
+          # installer, the portable zip, and the update file, and PDBs are not
+          # produced because debug information is turned off.
           foreach ($name in @(
             "${env:SETUP_PREFIX}.${env:AppVersionStrFull}.exe",
-            "${env:UPD_PREFIX}${env:AppVersion}",
-            'Updater.exe', 'Telegram.pdb', 'Updater.pdb')) {
+            "${env:UPD_PREFIX}${env:AppVersion}")) {
             $path = Join-Path $release $name
-            if (Test-Path $path) { Copy-Item $path $deploy } else { Write-Host "missing: $name" }
+            if (Test-Path $path) { Copy-Item $path $deploy } else { Write-Error "missing: $name"; exit 1 }
           }
           Get-ChildItem $deploy | Format-Table Name, Length
 
