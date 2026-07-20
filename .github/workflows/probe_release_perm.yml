@@ -20,19 +20,35 @@ jobs:
           echo "--- can the token read releases? ---"
           gh api repos/$GITHUB_REPOSITORY/releases -q 'length' && echo "read: OK" || echo "read: FAILED"
 
-          echo "--- can the token create a release? ---"
+          echo "--- draft release (creates no tag) ---"
           set +e
           out=$(gh api -X POST repos/$GITHUB_REPOSITORY/releases \
-            -f tag_name=probe-delete-me \
-            -f name=probe \
+            -f tag_name=probe-draft-delete-me \
+            -f name=probe-draft \
             -F draft=true 2>&1)
+          code=$?
+          if [ $code -eq 0 ]; then
+            echo "draft create: OK"
+            id=$(printf '%s' "$out" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
+            gh api -X DELETE repos/$GITHUB_REPOSITORY/releases/$id >/dev/null && echo "  cleaned up"
+          else
+            echo "draft create: FAILED"; printf '%s\n' "$out" | head -3
+          fi
+
+          echo "--- published release with a NEW tag (this is what the real job does) ---"
+          out=$(gh api -X POST repos/$GITHUB_REPOSITORY/releases \
+            -f tag_name=probe-tag-delete-me \
+            -f name=probe-tag \
+            -f target_commitish=$GITHUB_SHA \
+            -F draft=false 2>&1)
           code=$?
           set -e
           if [ $code -eq 0 ]; then
-            echo "create: OK"
+            echo "published create: OK"
             id=$(printf '%s' "$out" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
-            gh api -X DELETE repos/$GITHUB_REPOSITORY/releases/$id && echo "cleaned up the probe release"
+            gh api -X DELETE repos/$GITHUB_REPOSITORY/releases/$id >/dev/null && echo "  cleaned up release"
+            gh api -X DELETE repos/$GITHUB_REPOSITORY/git/refs/tags/probe-tag-delete-me >/dev/null 2>&1 && echo "  cleaned up tag"
           else
-            echo "create: FAILED"
+            echo "published create: FAILED"
             printf '%s\n' "$out" | head -5
           fi
