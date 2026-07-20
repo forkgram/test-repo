@@ -1,8 +1,13 @@
-name: Windows x64 Release.
+name: Windows Release.
 
 on:
   workflow_dispatch:
     inputs:
+      arch:
+        description: 'Which architectures to build.'
+        type: choice
+        options: [both, x64, x86]
+        default: both
       only_cache:
         description: 'Only prepare libraries and warm the cache.'
         type: boolean
@@ -33,12 +38,30 @@ concurrency:
 jobs:
 
   windows-release:
-    name: Windows x64 Release
+    name: Windows ${{ matrix.arch }} Release
     runs-on: windows-latest
     timeout-minutes: 360
 
+    strategy:
+      # Let one architecture finish even if the other fails - they share nothing
+      # but the release they upload to.
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.arch != 'both') && format('["{0}"]', inputs.arch) || '["x64","x86"]') }}
+
     env:
       PREPARE_PATH: "Telegram/build/prepare/prepare.py"
+      # Everything the two architectures name differently. prepare.py keeps 64-bit
+      # libraries in a win64 subdirectory and 32-bit ones directly in Libraries,
+      # and the release file names follow the same split.
+      BUILD_TARGET: ${{ matrix.arch == 'x64' && 'win64' || 'win' }}
+      MSVC_ARCH: ${{ matrix.arch == 'x64' && 'x64' || 'x64_x86' }}
+      LIBS_SUBDIR: ${{ matrix.arch == 'x64' && '\win64' || '' }}
+      ISS_TARGET: ${{ matrix.arch == 'x64' && 'win64' || 'win32' }}
+      UPD_PREFIX: ${{ matrix.arch == 'x64' && 'tx64upd' || 'tupdate' }}
+      SETUP_PREFIX: ${{ matrix.arch == 'x64' && 'tsetup-x64' || 'tsetup' }}
+      PORTABLE_PREFIX: ${{ matrix.arch == 'x64' && 'tportable-x64' || 'tportable' }}
+      MODULES_ARCH: ${{ matrix.arch == 'x64' && 'x64' || 'x86' }}
       ONLY_CACHE: ${{ inputs.only_cache && 'true' || 'false' }}
       ENABLE_LTO: ${{ inputs.lto && 'true' || 'false' }}
       # qt_version.py defaults x64 to Qt 5.15, but lib_ui calls the Qt 6 only
@@ -107,7 +130,7 @@ jobs:
             mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
           )
           echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
-          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries\win64>>%GITHUB_ENV%
+          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries%LIBS_SUBDIR%>>%GITHUB_ENV%
 
       - name: Get repository name.
         shell: bash
@@ -199,7 +222,7 @@ jobs:
 
           # Presence of this file is what makes run_cmake.py pass
           # -DDESKTOP_APP_SPECIAL_TARGET, which is what builds Packer.
-          echo "win64" > $TBUILD/$REPO_NAME/Telegram/build/target
+          echo "$BUILD_TARGET" > $TBUILD/$REPO_NAME/Telegram/build/target
 
           echo "DesktopPrivate contents:"
           ls -l $TBUILD/DesktopPrivate
@@ -207,7 +230,7 @@ jobs:
       - uses: Eden-CI/msvc-dev-cmd@master
         name: Native Tools Command Prompt.
         with:
-          arch: x64
+          arch: ${{ env.MSVC_ARCH }}
           sdk: ${{ env.SDK }}
           toolset: '14.44'
 
@@ -292,8 +315,8 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.TBUILD }}\ThirdParty
-          key: ${{ runner.OS }}-x64-third-party-${{ env.CACHE_KEY }}-${{ github.run_id }}
-          restore-keys: ${{ runner.OS }}-x64-third-party-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-third-party-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-third-party-
 
       - name: Libraries cache.
         id: cache-libs
@@ -305,8 +328,8 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-x64-libs-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
-          restore-keys: ${{ runner.OS }}-x64-libs-rel-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-libs-rel-
 
       - name: Qt cache.
         id: cache-qt
@@ -315,8 +338,8 @@ jobs:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-x64-${{ env.QT_OPTION == 'qt6' && 'qt6' || 'qt5' }}-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
-          restore-keys: ${{ runner.OS }}-x64-${{ env.QT_OPTION == 'qt6' && 'qt6' || 'qt5' }}-rel-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-${{ env.QT_OPTION == 'qt6' && 'qt6' || 'qt5' }}-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-${{ env.QT_OPTION == 'qt6' && 'qt6' || 'qt5' }}-rel-
 
       # prepare.py trusts cache_keys alone, so a restored cache that lost an
       # artifact is reported as built and never refetched. Drop the key when the
@@ -325,7 +348,7 @@ jobs:
         shell: bash
         run: |
           [ -d "$LibrariesPath" ] || exit 0
-          if [ ! -f "$LibrariesPath/yy_thunks/objs/x64/YY_Thunks_for_Win7.obj" ]; then
+          if [ ! -f "$LibrariesPath/yy_thunks/objs/$MODULES_ARCH/YY_Thunks_for_Win7.obj" ]; then
             rm -f "$LibrariesPath"/cache_keys/yy_thunks*
             echo "yy_thunks object missing, dropped its cache key"
           fi
@@ -351,7 +374,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ env.TBUILD }}\ThirdParty
-          key: ${{ runner.OS }}-x64-third-party-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          key: ${{ runner.OS }}-${{ matrix.arch }}-third-party-${{ env.CACHE_KEY }}-${{ github.run_id }}
 
       - name: Save libraries cache.
         if: always()
@@ -363,7 +386,7 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-x64-libs-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
 
       - name: Save Qt cache.
         if: always()
@@ -372,7 +395,7 @@ jobs:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-x64-${{ env.QT_OPTION == 'qt6' && 'qt6' || 'qt5' }}-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          key: ${{ runner.OS }}-${{ matrix.arch }}-${{ env.QT_OPTION == 'qt6' && 'qt6' || 'qt5' }}-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
 
       # cmake_helpers sets a bare /MP, so cl.exe forks one compiler per core and
       # four of them compiling the generated qrc translation units exhaust the
@@ -388,8 +411,8 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}\out
-          key: ${{ runner.OS }}-x64-out-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
-          restore-keys: ${{ runner.OS }}-x64-out-rel-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-out-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-out-rel-
 
       - name: Telegram Desktop build.
         if: env.ONLY_CACHE == 'false'
@@ -417,7 +440,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}\out
-          key: ${{ runner.OS }}-x64-out-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          key: ${{ runner.OS }}-${{ matrix.arch }}-out-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
 
       - name: Set up the code signing certificate.
         if: env.ONLY_CACHE == 'false'
@@ -479,14 +502,14 @@ jobs:
 
           # Not $args: that is an automatic variable in PowerShell.
           $packerArgs = @('-version', $env:AppVersion, '-path', 'Telegram.exe', '-path', 'Updater.exe')
-          $d3d = 'modules\x64\d3d\d3dcompiler_47.dll'
+          $d3d = "modules\${env:MODULES_ARCH}\d3d\d3dcompiler_47.dll"
           if (Test-Path $d3d) { $packerArgs += @('-path', $d3d) }
-          $packerArgs += @('-target', 'win64')
+          $packerArgs += @('-target', $env:BUILD_TARGET)
 
           & .\Packer.exe @packerArgs
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-          $update = "tx64upd${env:AppVersion}"
+          $update = "${env:UPD_PREFIX}${env:AppVersion}"
           if (-not (Test-Path $update)) { Write-Error "$update was not produced"; exit 1 }
           echo "Produced $update ($((Get-Item $update).Length) bytes)"
 
@@ -510,11 +533,11 @@ jobs:
             "/dMyAppVersionZero=$env:AppVersionStr" `
             "/dMyAppVersionFull=$env:AppVersionStrFull" `
             "/dReleasePath=$release" `
-            "/dMyBuildTarget=win64" `
+            "/dMyBuildTarget=${env:ISS_TARGET}" `
             $iss
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-          $setup = Join-Path $release "tsetup-x64.${env:AppVersionStrFull}.exe"
+          $setup = Join-Path $release "${env:SETUP_PREFIX}.${env:AppVersionStrFull}.exe"
           if (-not (Test-Path $setup)) { Write-Error "$setup was not produced"; exit 1 }
           & $env:SIGNTOOL sign /f $env:CODESIGN_PFX /p $env:CODESIGN_PASSWORD /fd SHA256 $setup
           if ($LASTEXITCODE -ne 0) { exit 1 }
@@ -529,15 +552,15 @@ jobs:
           New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
 
           Copy-Item (Join-Path $release 'Telegram.exe') $portableDir
-          $d3d = Join-Path $release 'modules\x64\d3d\d3dcompiler_47.dll'
+          $d3d = Join-Path $release "modules\${env:MODULES_ARCH}\d3d\d3dcompiler_47.dll"
           if (Test-Path $d3d) {
-            $modules = Join-Path $portableDir 'modules\x64\d3d'
+            $modules = Join-Path $portableDir "modules\${env:MODULES_ARCH}\d3d"
             New-Item -ItemType Directory -Path $modules -Force | Out-Null
             Copy-Item $d3d $modules
           }
 
           Set-Location $deploy
-          $portable = "tportable-x64.${env:AppVersionStrFull}.zip"
+          $portable = "${env:PORTABLE_PREFIX}.${env:AppVersionStrFull}.zip"
           & 7z a -mx9 $portable Telegram\
           if ($LASTEXITCODE -ne 0) { exit 1 }
           & 7z t $portable
@@ -545,9 +568,9 @@ jobs:
           Remove-Item -Recurse -Force $portableDir
 
           foreach ($name in @(
-            "tsetup-x64.${env:AppVersionStrFull}.exe",
-            "tx64upd${env:AppVersion}",
-            'Telegram.exe', 'Updater.exe', 'Telegram.pdb', 'Updater.pdb')) {
+            "${env:SETUP_PREFIX}.${env:AppVersionStrFull}.exe",
+            "${env:UPD_PREFIX}${env:AppVersion}",
+            'Updater.exe', 'Telegram.pdb', 'Updater.pdb')) {
             $path = Join-Path $release $name
             if (Test-Path $path) { Copy-Item $path $deploy } else { Write-Host "missing: $name" }
           }
@@ -557,7 +580,7 @@ jobs:
         name: Upload the artifacts.
         if: env.ONLY_CACHE == 'false'
         with:
-          name: Telegram x64 Release ${{ env.AppVersionStrFull }}
+          name: Telegram ${{ matrix.arch }} Release ${{ env.AppVersionStrFull }}
           path: deploy\
 
       - name: Publish the release.
@@ -571,12 +594,22 @@ jobs:
           # is not a git repository and gh cannot infer the repo. Name it outright.
           R="$GITHUB_REPOSITORY"
           TAG="${GITHUB_REF#refs/tags/}"
+
+          # Both architectures publish into one release and can reach this at the
+          # same moment, so losing the create race is fine as long as the release
+          # exists afterwards.
+          ensure_release() {
+            gh release view "$TAG" -R "$R" >/dev/null 2>&1 && return 0
+            gh release create "$TAG" -R "$R" "$@" \
+              --title "$AppVersionStrFull" \
+              --notes "Windows build of $AppVersionStrFull." >/dev/null 2>&1 \
+              || gh release view "$TAG" -R "$R" >/dev/null
+          }
+
           if [ "$TAG" == "$GITHUB_REF" ]; then
             TAG="v$AppVersionStrFull"
-            gh release view "$TAG" -R "$R" >/dev/null 2>&1 || gh release create "$TAG" -R "$R" \
-              --target "$GITHUB_SHA" --title "$AppVersionStrFull" --notes "Windows x64 build of $AppVersionStrFull."
+            ensure_release --target "$GITHUB_SHA"
           else
-            gh release view "$TAG" -R "$R" >/dev/null 2>&1 || gh release create "$TAG" -R "$R" \
-              --title "$AppVersionStrFull" --notes "Windows x64 build of $AppVersionStrFull."
+            ensure_release
           fi
           gh release upload "$TAG" deploy/* -R "$R" --clobber
