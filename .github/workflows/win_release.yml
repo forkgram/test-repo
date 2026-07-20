@@ -411,8 +411,8 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}\out
-          key: ${{ runner.OS }}-${{ matrix.arch }}-out-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
-          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-out-rel-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-out-rel-${{ env.CACHE_KEY }}-${{ hashFiles('.github/workflows/win_release.yml') }}-${{ github.run_id }}
+          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-out-rel-${{ env.CACHE_KEY }}-${{ hashFiles('.github/workflows/win_release.yml') }}-
 
       - name: Telegram Desktop build.
         if: env.ONLY_CACHE == 'false'
@@ -424,6 +424,14 @@ jobs:
         run: |
           cd %TBUILD%\%REPO_NAME%\Telegram
 
+          rem Re-running cmake rewrites the .vcxproj files, and the fresh
+          rem timestamps make MSBuild rebuild everything - which throws away the
+          rem restored build tree. Configure only when there is nothing to reuse.
+          if exist ..\out\CMakeCache.txt (
+            echo Build tree already configured, skipping configure.
+            goto :build
+          )
+
           call configure.bat ^
           %QT_OPTION% ^
           -D CMAKE_CONFIGURATION_TYPES=Release ^
@@ -433,6 +441,7 @@ jobs:
           -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
           %LTO_FLAG% || exit /b 1
 
+          :build
           cmake --build ..\out --config Release --target Telegram --parallel 2 || exit /b 1
 
       - name: Save build tree cache.
@@ -440,7 +449,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}\out
-          key: ${{ runner.OS }}-${{ matrix.arch }}-out-rel-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          key: ${{ runner.OS }}-${{ matrix.arch }}-out-rel-${{ env.CACHE_KEY }}-${{ hashFiles('.github/workflows/win_release.yml') }}-${{ github.run_id }}
 
       - name: Set up the code signing certificate.
         if: env.ONLY_CACHE == 'false'
