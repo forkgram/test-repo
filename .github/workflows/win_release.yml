@@ -65,8 +65,11 @@ jobs:
       ISS_TARGET: ${{ matrix.arch == 'x64' && 'win64' || 'win32' }}
       UPD_PREFIX: ${{ matrix.arch == 'x64' && 'tx64upd' || 'tupdate' }}
       SETUP_PREFIX: ${{ matrix.arch == 'x64' && 'tsetup-x64' || 'tsetup' }}
-      PORTABLE_PREFIX: ${{ matrix.arch == 'x64' && 'tportable-x64' || 'tportable' }}
       MODULES_ARCH: ${{ matrix.arch == 'x64' && 'x64' || 'x86' }}
+      # Final GitHub-release asset names, matching the fork's existing releases so
+      # successive versions line up. x86 is labelled x32, as the fork names it.
+      ASSET_INSTALLER: ${{ matrix.arch == 'x64' && 'Telegram.Windows.x64.Installer.exe' || 'Telegram.Windows.x32.Installer.exe' }}
+      ASSET_PORTABLE: ${{ matrix.arch == 'x64' && 'Telegram.zip' || 'Telegram_x86.zip' }}
       ONLY_CACHE: ${{ inputs.only_cache && 'true' || 'false' }}
       ENABLE_LTO: ${{ inputs.lto && 'true' || 'false' }}
       # qt_version.py defaults x64 to Qt 5.15, but lib_ui calls the Qt 6 only
@@ -586,22 +589,24 @@ jobs:
           }
 
           Set-Location $deploy
-          $portable = "${env:PORTABLE_PREFIX}.${env:AppVersionStrFull}.zip"
-          & 7z a -mx9 $portable Telegram\
+          & 7z a -mx9 $env:ASSET_PORTABLE Telegram\
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          & 7z t $portable
+          & 7z t $env:ASSET_PORTABLE
           if ($LASTEXITCODE -ne 0) { exit 1 }
           Remove-Item -Recurse -Force $portableDir
 
-          # Only the distributable outputs. Updater.exe already ships inside the
-          # installer, the portable zip, and the update file, and PDBs are not
-          # produced because debug information is turned off.
-          foreach ($name in @(
-            "${env:SETUP_PREFIX}.${env:AppVersionStrFull}.exe",
-            "${env:UPD_PREFIX}${env:AppVersion}")) {
-            $path = Join-Path $release $name
-            if (Test-Path $path) { Copy-Item $path $deploy } else { Write-Error "missing: $name"; exit 1 }
-          }
+          # The installer takes the fork's release asset name. The update file keeps
+          # its raw name - the Telegram job derives the platform from it, and it is
+          # not a GitHub-release asset. Updater.exe and PDBs are left out: Updater
+          # ships inside every distributable and PDBs are not built.
+          $installer = Join-Path $release "${env:SETUP_PREFIX}.${env:AppVersionStrFull}.exe"
+          if (-not (Test-Path $installer)) { Write-Error "missing installer: $installer"; exit 1 }
+          Copy-Item $installer (Join-Path $deploy $env:ASSET_INSTALLER)
+
+          $update = Join-Path $release "${env:UPD_PREFIX}${env:AppVersion}"
+          if (-not (Test-Path $update)) { Write-Error "missing update file: $update"; exit 1 }
+          Copy-Item $update $deploy
+
           Get-ChildItem $deploy | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v7
@@ -625,26 +630,32 @@ jobs:
           # The checkout lives in a subdirectory, so this step's working directory
           # is not a git repository and gh cannot infer the repo. Name it outright.
           R="$GITHUB_REPOSITORY"
-          TAG="${GITHUB_REF#refs/tags/}"
 
-          # Both architectures publish into one release and can reach this at the
-          # same moment, so losing the create race is fine as long as the release
-          # exists afterwards.
-          ensure_release() {
-            gh release view "$TAG" -R "$R" >/dev/null 2>&1 && return 0
-            gh release create "$TAG" -R "$R" "$@" \
-              --title "$AppVersionStrFull" \
-              --notes "Windows build of $AppVersionStrFull." >/dev/null 2>&1 \
-              || gh release view "$TAG" -R "$R" >/dev/null
-          }
-
-          if [ "$TAG" == "$GITHUB_REF" ]; then
-            TAG="v$AppVersionStrFull"
-            ensure_release --target "$GITHUB_SHA"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"   # tag push: the tag already points at the commit
+            TARGET=()
           else
-            ensure_release
+            TAG="v$AppVersionStrFull"        # manual run: create the tag off dev, as the fork does
+            TARGET=(--target dev)
           fi
-          gh release upload "$TAG" deploy/* -R "$R" --clobber
+
+          # Create the release only if it is missing; otherwise leave its title and
+          # notes untouched and just add assets below. This lets the two arch legs
+          # (and a separate macOS/source workflow) share one release without any of
+          # them clobbering the others - and tolerates losing the create race.
+          if ! gh release view "$TAG" -R "$R" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$R" "${TARGET[@]}" \
+              --title "Forkgram $TAG" \
+              --notes "Forkgram $TAG" >/dev/null 2>&1 \
+              || gh release view "$TAG" -R "$R" >/dev/null
+          fi
+
+          # Only this arch's two Windows assets, under the fork's names. --clobber
+          # refreshes same-named assets on a re-run and never touches other assets.
+          gh release upload "$TAG" \
+            "deploy/$ASSET_INSTALLER" \
+            "deploy/$ASSET_PORTABLE" \
+            -R "$R" --clobber
 
   # Publishing to the live channels is what triggers auto-update for every user,
   # so it runs only on a release tag or an explicit manual choice, in its own
