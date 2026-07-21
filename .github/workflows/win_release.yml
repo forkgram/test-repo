@@ -683,8 +683,11 @@ jobs:
 
       - name: Publish.
         env:
-          TG_API_ID: ${{ secrets.TG_API_ID }}
-          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          # api_id/api_hash are not the secret here - the session is. These are the
+          # client's own credentials, already public in snap/snapcraft.yaml and
+          # compiled into every snap, so keeping them in the clear leaks nothing.
+          TG_API_ID: "14577864"
+          TG_API_HASH: "54d3ae230fd8f985ce9adccf08fbd9d6"
           TG_SESSION: ${{ secrets.TG_SESSION }}
           TG_FEED_CHANNEL: frkgrmfeed2
           TG_FILES_CHANNEL: frkgrmfiles
