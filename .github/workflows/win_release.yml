@@ -24,6 +24,11 @@ on:
         description: 'Publish a GitHub Release with the artifacts.'
         type: boolean
         default: false
+      telegram:
+        description: 'Publish update files to the Telegram channels (manual runs).'
+        type: choice
+        options: [off, dry-run, testing, released]
+        default: off
   push:
     tags:
       - 'v*'
@@ -640,3 +645,50 @@ jobs:
             ensure_release
           fi
           gh release upload "$TAG" deploy/* -R "$R" --clobber
+
+  # Publishing to the live channels is what triggers auto-update for every user,
+  # so it runs only on a release tag or an explicit manual choice, in its own
+  # job that no build step shares. Give it a 'telegram-publish' environment in
+  # repo settings, hold the three TG_* secrets there, and add required reviewers
+  # or a tag restriction so the account session cannot be reached from a stray
+  # push or PR. The feed must carry every platform in one message, so this waits
+  # for the whole matrix and merges onto the previous feed JSON.
+  publish-telegram:
+    name: Publish update files to Telegram
+    needs: windows-release
+    runs-on: ubuntu-latest
+    if: >-
+      needs.windows-release.result == 'success' &&
+      (startsWith(github.ref, 'refs/tags/') ||
+       (github.event_name == 'workflow_dispatch' && inputs.telegram != 'off'))
+    environment: telegram-publish
+    steps:
+      - name: Clone the uploader script.
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts/publish_telegram.py
+          sparse-checkout-cone-mode: false
+
+      - name: Download build artifacts.
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Telethon.
+        run: pip install telethon
+
+      - name: Publish.
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+          TG_FEED_CHANNEL: frkgrmfeed2
+          TG_FILES_CHANNEL: frkgrmfiles
+          ARTIFACTS_DIR: artifacts
+          TG_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.telegram == 'dry-run') && '1' || '' }}
+          TG_ENTRY_KEY: ${{ (github.event_name == 'workflow_dispatch' && inputs.telegram == 'testing') && 'testing' || 'released' }}
+        run: python .github/scripts/publish_telegram.py
