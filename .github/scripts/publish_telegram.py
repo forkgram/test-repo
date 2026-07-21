@@ -110,6 +110,17 @@ async def main():
             print(f"Scheduling every message for {when:%Y-%m-%d} "
                   f"({SCHEDULE_DAYS} days out); nothing appears in the channels now.")
 
+        # The fork's feed points every channel/type key of a platform at the same
+        # update message. A released build therefore lands in all four (beta and
+        # stable, released and testing); a testing build only touches the testing
+        # keys, leaving released users on the previous version.
+        if ENTRY_KEY == "testing":
+            targets = [("beta", "testing"), ("stable", "testing")]
+        else:
+            targets = [(chan, key)
+                       for chan in ("beta", "stable")
+                       for key in ("released", "testing")]
+
         for platform, (version, path) in sorted(updates.items()):
             if DRY_RUN:
                 entry = f"{version}:{FILES}#<dry-run>"
@@ -122,7 +133,9 @@ async def main():
                     schedule=when)
                 entry = f"{version}:{FILES}#{msg.id}"
                 print(f"uploaded {platform}: {entry}")
-            merged.setdefault(platform, {}).setdefault("stable", {})[ENTRY_KEY] = entry
+            entry_map = merged.setdefault(platform, {})
+            for chan, key in targets:
+                entry_map.setdefault(chan, {})[key] = entry
 
         text = json.dumps(merged, separators=(",", ":"), sort_keys=True)
         print("\nFeed JSON:")
