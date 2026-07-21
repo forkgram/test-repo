@@ -36,6 +36,12 @@ on:
   push:
     tags:
       - 'v*'
+  schedule:
+    # Keep the library and Qt caches warm. GitHub evicts a cache after 7 days
+    # unused, and a from-scratch Qt build is hours, so a twice-weekly library-only
+    # run means the first real release never rebuilds them. Rebuilds only what a
+    # submodule or prepare.py change actually touched; an unchanged run is cheap.
+    - cron: '0 3 * * 1,4'
 
 permissions:
   contents: write
@@ -74,7 +80,8 @@ jobs:
       # successive versions line up. x86 is labelled x32, as the fork names it.
       ASSET_INSTALLER: ${{ matrix.arch == 'x64' && 'Telegram.Windows.x64.Installer.exe' || 'Telegram.Windows.x32.Installer.exe' }}
       ASSET_PORTABLE: ${{ matrix.arch == 'x64' && 'Telegram.zip' || 'Telegram_x86.zip' }}
-      ONLY_CACHE: ${{ inputs.only_cache && 'true' || 'false' }}
+      # A scheduled run only warms caches - never builds Telegram or publishes.
+      ONLY_CACHE: ${{ (github.event_name == 'schedule' || inputs.only_cache) && 'true' || 'false' }}
       ENABLE_LTO: ${{ inputs.lto && 'true' || 'false' }}
       # qt_version.py defaults x64 to Qt 5.15, but lib_ui calls the Qt 6 only
       # accessibility API (QAccessibleAttributesInterface) with no version guard,
