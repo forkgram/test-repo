@@ -27,8 +27,12 @@ on:
       telegram:
         description: 'Publish update files to the Telegram channels (manual runs).'
         type: choice
-        options: [off, scheduled, testing, released]
-        default: off
+        # 'off' MUST be quoted: YAML parses the bare word as boolean false, which
+        # drops it from the allowed values and, worse, makes the job's != 'off'
+        # guard fire on every plain run - publishing to the live channels by
+        # accident. Quoted, it stays the string the guard compares against.
+        options: ['off', scheduled, testing, released]
+        default: 'off'
   push:
     tags:
       - 'v*'
