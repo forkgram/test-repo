@@ -2,28 +2,20 @@
 """
 Publish Windows auto-update files to the Telegram update channels.
 
-The client resolves the feed channel over MTProto, reads its latest message,
-parses it as a JSON map of platform -> channel -> type -> "<version>:<files
-channel>#<message id>", and downloads the referenced document. So publishing is
-two moves: upload each update file to the files channel, then post one feed
-message that points at those uploads.
+The client reads the feed channel's latest message over MTProto - a JSON map of
+platform -> channel -> type -> "<version>:<files channel>#<message id>" - and
+downloads the referenced document. So: upload each update file to the files
+channel, then post one feed message pointing at the uploads. That message must
+carry every platform at once, so new entries are merged onto the previous feed
+JSON rather than replacing it.
 
-The feed's latest message must carry every platform at once (the client only
-reads one message), so this merges the new entries onto the previous feed JSON
-rather than replacing it - a single-arch run then keeps the other platform live.
-
-Env:
-  TG_API_ID, TG_API_HASH, TG_SESSION  - uploader account credentials (secrets)
-  TG_FEED_CHANNEL   default frkgrmfeed2
-  TG_FILES_CHANNEL  default frkgrmfiles
-  ARTIFACTS_DIR     where the downloaded build artifacts live
-  TG_ENTRY_KEY      "released" (default) or "testing"
-  TG_DRY_RUN        "1" to resolve and compose without uploading or posting
-  TG_SCHEDULE_DAYS  post as scheduled messages this many days ahead (0 = now).
-                    A smoke test that exercises the real upload and post path
-                    while keeping everything out of the live channel: the
-                    messages sit in each channel's Scheduled queue, invisible to
-                    subscribers, until the far-future date (delete them after).
+Env: TG_API_ID, TG_API_HASH, TG_SESSION (uploader account, secrets);
+TG_FEED_CHANNEL (frkgrmfeed2), TG_FILES_CHANNEL (frkgrmfiles), ARTIFACTS_DIR;
+TG_ENTRY_KEY "released"/"testing"; TG_DRY_RUN "1"; TG_SCHEDULE_DAYS N (post N days
+ahead into the Scheduled queue - an invisible smoke test); TG_FEED_MAX_AGE_DAYS D
+(edit the latest feed message instead of posting a new one when it is <= D days
+old and already carries this version, so one message covers all platforms;
+default 2).
 """
 import os
 import re
@@ -42,6 +34,7 @@ ARTIFACTS_DIR = os.environ.get("ARTIFACTS_DIR", "artifacts")
 ENTRY_KEY = os.environ.get("TG_ENTRY_KEY", "released")
 DRY_RUN = os.environ.get("TG_DRY_RUN", "") == "1"
 SCHEDULE_DAYS = int(os.environ.get("TG_SCHEDULE_DAYS", "0") or "0")
+MAX_AGE_DAYS = int(os.environ.get("TG_FEED_MAX_AGE_DAYS", "2") or "2")
 
 # Update file name -> platform key the client matches against Platform::AutoUpdateKey().
 NAME_TO_PLATFORM = [
@@ -63,8 +56,7 @@ def find_update_files(root):
             if not m:
                 continue
             if platform in result:
-                # Same platform twice means duplicate artifacts; keep the first
-                # and refuse to guess which is authoritative.
+                # Duplicate artifacts for one platform - refuse to guess.
                 sys.exit(f"Two update files map to {platform}: "
                          f"{result[platform][1]} and {path}")
             result[platform] = (int(m.group(1)), path)
@@ -81,6 +73,22 @@ def load_previous_feed(text):
         print("Previous feed message is not JSON; starting fresh.")
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def versions_in(feed):
+    """Every version integer referenced by any entry ('<ver>:chan#id') in a feed."""
+    found = set()
+    for platform in feed.values():
+        if not isinstance(platform, dict):
+            continue
+        for chan in platform.values():
+            if not isinstance(chan, dict):
+                continue
+            for entry in chan.values():
+                head = entry.split(":", 1)[0] if isinstance(entry, str) else ""
+                if head.isdigit():
+                    found.add(int(head))
+    return found
 
 
 async def main():
@@ -102,7 +110,10 @@ async def main():
         files = await client.get_entity(FILES)
 
         previous = await client.get_messages(feed, limit=1)
-        merged = load_previous_feed(previous[0].message if previous else "")
+        prev_msg = previous[0] if previous else None
+        merged = load_previous_feed(prev_msg.message if prev_msg else "")
+        prev_versions = versions_in(merged)
+        release_version = max(v for v, _ in updates.values())
 
         when = None
         if SCHEDULE_DAYS > 0:
@@ -110,10 +121,9 @@ async def main():
             print(f"Scheduling every message for {when:%Y-%m-%d} "
                   f"({SCHEDULE_DAYS} days out); nothing appears in the channels now.")
 
-        # The fork's feed points every channel/type key of a platform at the same
-        # update message. A released build therefore lands in all four (beta and
-        # stable, released and testing); a testing build only touches the testing
-        # keys, leaving released users on the previous version.
+        # The feed sets all four keys per platform (beta/stable x released/testing)
+        # to one message; a released build lands in all, a testing build only in
+        # the testing keys, leaving released users on the previous version.
         if ENTRY_KEY == "testing":
             targets = [("beta", "testing"), ("stable", "testing")]
         else:
@@ -144,9 +154,27 @@ async def main():
         if DRY_RUN:
             print("\n[dry-run] not posting the feed message.")
             return
-        posted = await client.send_message(feed, text, schedule=when)
-        where = "scheduled" if when else "posted"
-        print(f"\n{where} feed message #{posted.id} to {FEED}.")
+
+        # Edit the latest message in place when it belongs to this release wave -
+        # recent and already carrying this version (e.g. Mac published it first) -
+        # so one message covers every platform. Otherwise post a new one. A
+        # scheduled test never edits the live message.
+        age = (datetime.now(timezone.utc) - prev_msg.date) if prev_msg else None
+        same_wave = (when is None
+                     and prev_msg is not None
+                     and age <= timedelta(days=MAX_AGE_DAYS)
+                     and release_version in prev_versions)
+        if same_wave:
+            await client.edit_message(feed, prev_msg.id, text)
+            print(f"\nedited feed message #{prev_msg.id} in {FEED} "
+                  f"(age {age.days}d, version {release_version} already present).")
+        else:
+            posted = await client.send_message(feed, text, schedule=when)
+            reason = ("scheduled test" if when
+                      else "no recent same-version message" if prev_msg
+                      else "empty feed")
+            print(f"\n{'scheduled' if when else 'posted'} feed message "
+                  f"#{posted.id} to {FEED} ({reason}).")
 
 
 if __name__ == "__main__":
