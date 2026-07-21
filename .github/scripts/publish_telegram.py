@@ -41,6 +41,7 @@ NAME_TO_PLATFORM = [
     (re.compile(r"^tx64upd(\d+)$"), "win64"),
     (re.compile(r"^tarm64upd(\d+)$"), "winarm64"),
     (re.compile(r"^tupdate(\d+)$"), "win"),
+    (re.compile(r"^tlinuxupd(\d+)$"), "linux"),
 ]
 
 

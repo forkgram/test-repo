@@ -1,0 +1,322 @@
+name: Linux Release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      only_cache:
+        description: 'Only build the container image and warm the cache.'
+        type: boolean
+        default: false
+      publish_release:
+        description: 'Publish a GitHub Release with the artifacts.'
+        type: boolean
+        default: false
+      telegram:
+        description: 'Publish update files to the Telegram channels (manual runs).'
+        type: choice
+        # 'off' MUST be quoted: YAML parses the bare word as boolean false, which
+        # drops it from the allowed values and, worse, makes the job's != 'off'
+        # guard fire on every plain run - publishing to the live channels by
+        # accident. Quoted, it stays the string the guard compares against.
+        options: ['off', scheduled, testing, released]
+        default: 'off'
+  push:
+    tags:
+      - 'v*'
+  schedule:
+    # The centos_env image builds every library from source, so a cold run is
+    # hours. GitHub evicts a cache after 7 days unused; a twice-weekly image-only
+    # run keeps the first real release cheap. Offset from the Windows warmer.
+    - cron: '0 5 * * 1,4'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: linux-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+
+  linux-release:
+    name: Linux x64 Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      IMAGE_TAG: tdesktop:centos_env
+      BUILD_CONFIG: MinSizeRel
+      UPD_PREFIX: tlinuxupd
+      ASSET_PORTABLE: Forkgram.Linux.x64.tar.xz
+      ONLY_CACHE: ${{ (github.event_name == 'schedule' || inputs.only_cache) && 'true' || 'false' }}
+      PUBLISH_RELEASE: ${{ (inputs.publish_release || startsWith(github.ref, 'refs/tags/')) && 'true' || 'false' }}
+
+    steps:
+      - name: Clone.
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Read version.
+        run: |
+          awk 'NF { print $1"="$2 }' Telegram/build/version >> $GITHUB_ENV
+          source <(awk 'NF { print $1"="$2 }' Telegram/build/version)
+
+          if [ "$AlphaVersion" != "0" ]; then
+            echo "AppVersionStrFull=${AppVersionStr}_${AlphaVersion}" >> $GITHUB_ENV
+          elif [ "$BetaChannel" != "0" ]; then
+            echo "AppVersionStrFull=${AppVersionStr}.beta" >> $GITHUB_ENV
+          else
+            echo "AppVersionStrFull=${AppVersionStr}" >> $GITHUB_ENV
+          fi
+          echo "Building version $AppVersionStr ($AppVersion)."
+
+      - name: Set up DesktopPrivate.
+        if: env.ONLY_CACHE == 'false'
+        env:
+          API_ID: ${{ secrets.TDESKTOP_API_ID }}
+          API_HASH: ${{ secrets.TDESKTOP_API_HASH }}
+          PACKER_KEY: ${{ secrets.PACKER_PRIVATE_KEY }}
+          PACKER_BETA_KEY: ${{ secrets.PACKER_PRIVATE_BETA_KEY }}
+          ALPHA_KEY: ${{ secrets.ALPHA_PRIVATE_KEY }}
+        run: |
+          set -e
+          python3 - <<'PY'
+          import os, pathlib
+
+          private = pathlib.Path(os.environ['GITHUB_WORKSPACE']).parent / 'DesktopPrivate'
+          private.mkdir(parents=True, exist_ok=True)
+
+          def literal(name, pem, static=False):
+              lines = [l.strip() for l in pem.strip().splitlines() if l.strip()]
+              body = ''.join(l + '\\n\\\n' for l in lines[:-1]) + lines[-1] + '\\\n'
+              return '%sconst char *%s = "\\\n%s";\n' % ('static ' if static else '', name, body)
+
+          # configure.py only regex-scans this one for the API credentials.
+          (private / 'custom_api_id.h').write_text(
+              'static const int32 ApiId = %s;\n'
+              'static const char *ApiHash = "%s";\n'
+              % (os.environ['API_ID'], os.environ['API_HASH']))
+
+          # packer.cpp declares both of these extern, so they must be defined here.
+          (private / 'packer_private.h').write_text(
+              literal('PrivateKey', os.environ['PACKER_KEY'])
+              + '\n'
+              + literal('PrivateBetaKey', os.environ['PACKER_BETA_KEY']))
+
+          # config.h defines this one static in its fallback branch, so match that.
+          (private / 'alpha_private.h').write_text(
+              literal('AlphaPrivateKey', os.environ['ALPHA_KEY'], static=True))
+          PY
+
+          ls -l $GITHUB_WORKSPACE/../DesktopPrivate
+
+      - name: Free up some disk space.
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
+        with:
+          tool-cache: true
+
+      - name: Generate the Dockerfile.
+        run: |
+          set -e
+          curl -sSL https://install.python-poetry.org | python3 -
+          cd Telegram/build/docker/centos_env
+          poetry install
+          DEBUG= LTO= poetry run gen_dockerfile > Dockerfile
+          rm -rf __pycache__
+
+      - name: Set up Docker Buildx.
+        id: setup-buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Libraries cache.
+        id: cache-libs
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ runner.temp }}/.buildx-cache
+            ${{ runner.temp }}/.mount-cache
+          key: ${{ runner.OS }}-libs-${{ hashFiles('Telegram/build/docker/centos_env/**') }}
+          restore-keys: ${{ runner.OS }}-libs-
+
+      # The image caches library builds in BuildKit mount caches, which the layer
+      # cache above does not carry. This copies them in and back out again.
+      - name: Restore Docker cache mounts.
+        uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723
+        with:
+          builder: ${{ steps.setup-buildx.outputs.name }}
+          cache-dir: ${{ runner.temp }}/.mount-cache
+          dockerfile: Telegram/build/docker/centos_env/Dockerfile
+          skip-extraction: ${{ steps.cache-libs.outputs.cache-hit }}
+
+      - name: Libraries.
+        uses: docker/build-push-action@v7
+        with:
+          context: Telegram/build/docker/centos_env
+          load: ${{ env.ONLY_CACHE == 'false' }}
+          tags: ${{ env.IMAGE_TAG }}
+          cache-from: type=local,src=${{ runner.temp }}/.buildx-cache
+          cache-to: type=local,dest=${{ runner.temp }}/.buildx-cache-new,mode=max
+
+      - name: Move cache.
+        run: |
+          rm -rf ${{ runner.temp }}/.buildx-cache
+          mv ${{ runner.temp }}/.buildx-cache{-new,}
+
+      - name: Telegram Desktop build.
+        if: env.ONLY_CACHE == 'false'
+        run: |
+          set -e
+          docker run --rm \
+            -u $(id -u) \
+            -v $PWD:/usr/src/tdesktop \
+            -v $PWD/../DesktopPrivate:/usr/src/DesktopPrivate \
+            -e CONFIG=$BUILD_CONFIG \
+            $IMAGE_TAG \
+            /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
+            -D TDESKTOP_API_ID=${{ secrets.TDESKTOP_API_ID }} \
+            -D TDESKTOP_API_HASH=${{ secrets.TDESKTOP_API_HASH }} \
+            -D DESKTOP_APP_SPECIAL_TARGET=linux
+
+      - name: Check.
+        if: env.ONLY_CACHE == 'false'
+        run: |
+          set -e
+          release="out/$BUILD_CONFIG"
+          for f in Forkgram Updater Packer; do
+            if [ ! -f "$release/$f" ]; then
+              echo "Build error: $release/$f does not exist."
+              exit 1
+            fi
+          done
+          file "$release/Forkgram"
+          echo "Forkgram: $(stat -c %s "$release/Forkgram") bytes."
+
+      # Before Packer, so the packed update carries the same stripped binary the
+      # release asset does - otherwise an updating client swaps in a different one.
+      - name: Strip, keeping MiniDebugInfo.
+        if: env.ONLY_CACHE == 'false'
+        run: |
+          set -e
+          Telegram/build/minidebug.sh out/$BUILD_CONFIG/Forkgram
+          echo "Stripped: $(stat -c %s out/$BUILD_CONFIG/Forkgram) bytes."
+
+      - name: Pack the update file.
+        if: env.ONLY_CACHE == 'false'
+        run: |
+          set -e
+          cd out/$BUILD_CONFIG
+          ./Packer -path Forkgram -path Updater -version "$AppVersion"
+
+          update="${UPD_PREFIX}${AppVersion}"
+          if [ ! -f "$update" ]; then
+            echo "Packed update file $update was not produced."
+            exit 1
+          fi
+          echo "Produced $update ($(stat -c %s "$update") bytes)."
+
+      - name: Collect the artifacts.
+        if: env.ONLY_CACHE == 'false'
+        run: |
+          set -e
+          release="out/$BUILD_CONFIG"
+          mkdir -p deploy
+
+          tar -cJf "deploy/$ASSET_PORTABLE" -C "$release" Forkgram Updater
+
+          # The update file keeps its raw name - the Telegram job derives the
+          # platform from it, and it is not a GitHub-release asset.
+          cp "$release/${UPD_PREFIX}${AppVersion}" deploy/
+
+          ls -l deploy
+
+      - uses: actions/upload-artifact@v7
+        name: Upload the artifacts.
+        if: env.ONLY_CACHE == 'false'
+        with:
+          name: Telegram Linux Release ${{ env.AppVersionStrFull }}
+          path: deploy/
+
+      - name: Publish the release.
+        if: env.ONLY_CACHE == 'false' && env.PUBLISH_RELEASE == 'true'
+        env:
+          # In a fork GitHub refuses release creation even when the workflow token
+          # is granted contents: write, so publishing needs a personal token. Add a
+          # RELEASE_TOKEN secret with 'repo' scope to enable it; without one this
+          # step will fail on a fork, which is why publish_release defaults to off.
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+        run: |
+          set -e
+          R="$GITHUB_REPOSITORY"
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"   # tag push: the tag already points at the commit
+            TARGET=()
+          else
+            TAG="v$AppVersionStrFull"        # manual run: create the tag off dev, as the fork does
+            TARGET=(--target dev)
+          fi
+
+          # Create the release only if it is missing; otherwise leave its title and
+          # notes untouched and just add assets below, so the Windows, macOS and
+          # Linux legs can share one release without clobbering each other.
+          if ! gh release view "$TAG" -R "$R" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$R" "${TARGET[@]}" \
+              --title "Forkgram $TAG" \
+              --notes "Forkgram $TAG" >/dev/null 2>&1 \
+              || gh release view "$TAG" -R "$R" >/dev/null
+          fi
+
+          gh release upload "$TAG" "deploy/$ASSET_PORTABLE" -R "$R" --clobber
+
+  publish-telegram:
+    name: Publish update files to Telegram
+    needs: linux-release
+    runs-on: ubuntu-latest
+    if: >-
+      needs.linux-release.result == 'success' &&
+      (startsWith(github.ref, 'refs/tags/') ||
+       (github.event_name == 'workflow_dispatch' && inputs.telegram != 'off'))
+    environment: telegram-publish
+    # The feed is one message shared with the Windows workflow, and the script
+    # rewrites it read-modify-write. Same group name on both sides serialises
+    # them; without it a simultaneous tag push loses one platform's entry.
+    concurrency:
+      group: telegram-feed
+      cancel-in-progress: false
+    steps:
+      - name: Clone the uploader script.
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts/publish_telegram.py
+          sparse-checkout-cone-mode: false
+
+      - name: Download build artifacts.
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Telethon.
+        run: pip install telethon
+
+      - name: Publish.
+        env:
+          # api_id/api_hash are not the secret here - the session is. These are
+          # Telegram's official open credentials, public by design, so the
+          # uploader's api_id is tied to neither the fork's client nor any account.
+          TG_API_ID: "611335"
+          TG_API_HASH: "d524b414d21f4d37f08684c1df41ac9c"
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+          TG_FEED_CHANNEL: ${{ secrets.TG_FEED_CHANNEL }}
+          TG_FILES_CHANNEL: ${{ secrets.TG_FILES_CHANNEL }}
+          ARTIFACTS_DIR: artifacts
+          # 'scheduled' sends everything for real but 360 days out, so it stays in
+          # each channel's Scheduled queue and no subscriber sees it - a full smoke
+          # test of the upload and post path. Delete those scheduled messages after.
+          TG_SCHEDULE_DAYS: ${{ (github.event_name == 'workflow_dispatch' && inputs.telegram == 'scheduled') && '360' || '0' }}
+          TG_ENTRY_KEY: ${{ (github.event_name == 'workflow_dispatch' && inputs.telegram == 'testing') && 'testing' || 'released' }}
+        run: python .github/scripts/publish_telegram.py
