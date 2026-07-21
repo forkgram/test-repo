@@ -122,8 +122,23 @@ jobs:
           curl -sSL https://install.python-poetry.org | python3 -
           cd Telegram/build/docker/centos_env
           poetry install
-          DEBUG= LTO= poetry run gen_dockerfile > Dockerfile
+
+          # The checked-in Dockerfile is itself the Jinja template, so it is both
+          # input and output. Redirecting straight into it truncates the template
+          # before the generator reads it and yields an empty file; render into a
+          # variable first.
+          DOCKERFILE=$(DEBUG= LTO= poetry run gen_dockerfile)
+          printf '%s\n' "$DOCKERFILE" > Dockerfile
           rm -rf __pycache__
+
+          # An empty render still builds a valid-looking context, and buildx only
+          # fails much later with 'file with no instructions'.
+          if [ "$(grep -c '^FROM' Dockerfile)" -lt 1 ]; then
+            echo "Generated Dockerfile has no FROM instruction:"
+            head -20 Dockerfile
+            exit 1
+          fi
+          echo "Generated Dockerfile: $(wc -l < Dockerfile) lines."
 
       - name: Set up Docker Buildx.
         id: setup-buildx
