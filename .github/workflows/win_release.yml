@@ -151,13 +151,13 @@ jobs:
           echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
           echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries%LIBS_SUBDIR%>>%GITHUB_ENV%
 
-      # Check the repo out into a 'forkgram' directory, matching the fork's local
-      # build layout - the qt6windows7 stage looks for its patches at
-      # %ROOT_DIR%\forkgram\patches, so CI and a local build resolve them the same
+      # Check the repo out into a 'tdesktop' directory - the repo's own name and
+      # how it clones locally. The qt6windows7 stage looks for its patches at
+      # %ROOT_DIR%\tdesktop\patches, so CI and a local build resolve them the same
       # way and prepare.py needs no CI-specific variable.
       - name: Set the build directory name.
         shell: bash
-        run: echo "REPO_NAME=forkgram" >> $GITHUB_ENV
+        run: echo "REPO_NAME=tdesktop" >> $GITHUB_ENV
 
       - name: Clone.
         uses: actions/checkout@v7
