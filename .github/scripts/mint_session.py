@@ -15,8 +15,8 @@ Put the three values into GitHub Actions secrets:
     TG_SESSION       - the string this script prints
 
 The StringSession grants FULL control of whatever account you log in with, so
-log in with a DEDICATED account that is an admin of only frkgrmfeed2 and
-frkgrmfiles - not your personal account.
+log in with a DEDICATED account that is an admin of only the two update
+channels (TG_FEED_CHANNEL and TG_FILES_CHANNEL) - not your personal account.
 """
 import os
 from telethon.sync import TelegramClient

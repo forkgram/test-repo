@@ -10,7 +10,7 @@ carry every platform at once, so new entries are merged onto the previous feed
 JSON rather than replacing it.
 
 Env: TG_API_ID, TG_API_HASH, TG_SESSION (uploader account, secrets);
-TG_FEED_CHANNEL (frkgrmfeed2), TG_FILES_CHANNEL (frkgrmfiles), ARTIFACTS_DIR;
+TG_FEED_CHANNEL, TG_FILES_CHANNEL, ARTIFACTS_DIR;
 TG_ENTRY_KEY "released"/"testing"; TG_DRY_RUN "1"; TG_SCHEDULE_DAYS N (post N days
 ahead into the Scheduled queue - an invisible smoke test); TG_FEED_MAX_AGE_DAYS D
 (edit the latest feed message instead of posting a new one when it is <= D days
@@ -28,8 +28,8 @@ from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-FEED = os.environ.get("TG_FEED_CHANNEL", "frkgrmfeed2")
-FILES = os.environ.get("TG_FILES_CHANNEL", "frkgrmfiles")
+FEED = os.environ["TG_FEED_CHANNEL"]
+FILES = os.environ["TG_FILES_CHANNEL"]
 ARTIFACTS_DIR = os.environ.get("ARTIFACTS_DIR", "artifacts")
 ENTRY_KEY = os.environ.get("TG_ENTRY_KEY", "released")
 DRY_RUN = os.environ.get("TG_DRY_RUN", "") == "1"

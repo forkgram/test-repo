@@ -715,8 +715,8 @@ jobs:
           TG_API_ID: "611335"
           TG_API_HASH: "d524b414d21f4d37f08684c1df41ac9c"
           TG_SESSION: ${{ secrets.TG_SESSION }}
-          TG_FEED_CHANNEL: frkgrmfeed2
-          TG_FILES_CHANNEL: frkgrmfiles
+          TG_FEED_CHANNEL: ${{ secrets.TG_FEED_CHANNEL }}
+          TG_FILES_CHANNEL: ${{ secrets.TG_FILES_CHANNEL }}
           ARTIFACTS_DIR: artifacts
           # 'scheduled' sends everything for real but 360 days out, so it stays in
           # each channel's Scheduled queue and no subscriber sees it - a full smoke
