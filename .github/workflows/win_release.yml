@@ -683,11 +683,11 @@ jobs:
 
       - name: Publish.
         env:
-          # api_id/api_hash are not the secret here - the session is. These are the
-          # client's own credentials, already public in snap/snapcraft.yaml and
-          # compiled into every snap, so keeping them in the clear leaks nothing.
-          TG_API_ID: "14577864"
-          TG_API_HASH: "54d3ae230fd8f985ce9adccf08fbd9d6"
+          # api_id/api_hash are not the secret here - the session is. These are
+          # Telegram's official open credentials, public by design, so the
+          # uploader's api_id is tied to neither the fork's client nor any account.
+          TG_API_ID: "611335"
+          TG_API_HASH: "d524b414d21f4d37f08684c1df41ac9c"
           TG_SESSION: ${{ secrets.TG_SESSION }}
           TG_FEED_CHANNEL: frkgrmfeed2
           TG_FILES_CHANNEL: frkgrmfiles
