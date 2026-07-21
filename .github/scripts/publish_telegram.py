@@ -19,6 +19,11 @@ Env:
   ARTIFACTS_DIR     where the downloaded build artifacts live
   TG_ENTRY_KEY      "released" (default) or "testing"
   TG_DRY_RUN        "1" to resolve and compose without uploading or posting
+  TG_SCHEDULE_DAYS  post as scheduled messages this many days ahead (0 = now).
+                    A smoke test that exercises the real upload and post path
+                    while keeping everything out of the live channel: the
+                    messages sit in each channel's Scheduled queue, invisible to
+                    subscribers, until the far-future date (delete them after).
 """
 import os
 import re
@@ -26,6 +31,7 @@ import sys
 import json
 import glob
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -35,6 +41,7 @@ FILES = os.environ.get("TG_FILES_CHANNEL", "frkgrmfiles")
 ARTIFACTS_DIR = os.environ.get("ARTIFACTS_DIR", "artifacts")
 ENTRY_KEY = os.environ.get("TG_ENTRY_KEY", "released")
 DRY_RUN = os.environ.get("TG_DRY_RUN", "") == "1"
+SCHEDULE_DAYS = int(os.environ.get("TG_SCHEDULE_DAYS", "0") or "0")
 
 # Update file name -> platform key the client matches against Platform::AutoUpdateKey().
 NAME_TO_PLATFORM = [
@@ -97,6 +104,12 @@ async def main():
         previous = await client.get_messages(feed, limit=1)
         merged = load_previous_feed(previous[0].message if previous else "")
 
+        when = None
+        if SCHEDULE_DAYS > 0:
+            when = datetime.now(timezone.utc) + timedelta(days=SCHEDULE_DAYS)
+            print(f"Scheduling every message for {when:%Y-%m-%d} "
+                  f"({SCHEDULE_DAYS} days out); nothing appears in the channels now.")
+
         for platform, (version, path) in sorted(updates.items()):
             if DRY_RUN:
                 entry = f"{version}:{FILES}#<dry-run>"
@@ -105,7 +118,8 @@ async def main():
                 msg = await client.send_file(
                     files, path,
                     force_document=True,
-                    caption=f"{os.path.basename(path)} ({platform})")
+                    caption=f"{os.path.basename(path)} ({platform})",
+                    schedule=when)
                 entry = f"{version}:{FILES}#{msg.id}"
                 print(f"uploaded {platform}: {entry}")
             merged.setdefault(platform, {}).setdefault("stable", {})[ENTRY_KEY] = entry
@@ -117,8 +131,9 @@ async def main():
         if DRY_RUN:
             print("\n[dry-run] not posting the feed message.")
             return
-        posted = await client.send_message(feed, text)
-        print(f"\nposted feed message #{posted.id} to {FEED}.")
+        posted = await client.send_message(feed, text, schedule=when)
+        where = "scheduled" if when else "posted"
+        print(f"\n{where} feed message #{posted.id} to {FEED}.")
 
 
 if __name__ == "__main__":

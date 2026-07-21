@@ -27,7 +27,7 @@ on:
       telegram:
         description: 'Publish update files to the Telegram channels (manual runs).'
         type: choice
-        options: [off, dry-run, testing, released]
+        options: [off, scheduled, testing, released]
         default: off
   push:
     tags:
@@ -692,6 +692,9 @@ jobs:
           TG_FEED_CHANNEL: frkgrmfeed2
           TG_FILES_CHANNEL: frkgrmfiles
           ARTIFACTS_DIR: artifacts
-          TG_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.telegram == 'dry-run') && '1' || '' }}
+          # 'scheduled' sends everything for real but 360 days out, so it stays in
+          # each channel's Scheduled queue and no subscriber sees it - a full smoke
+          # test of the upload and post path. Delete those scheduled messages after.
+          TG_SCHEDULE_DAYS: ${{ (github.event_name == 'workflow_dispatch' && inputs.telegram == 'scheduled') && '360' || '0' }}
           TG_ENTRY_KEY: ${{ (github.event_name == 'workflow_dispatch' && inputs.telegram == 'testing') && 'testing' || 'released' }}
         run: python .github/scripts/publish_telegram.py
