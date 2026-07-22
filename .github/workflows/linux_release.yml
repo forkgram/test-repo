@@ -309,9 +309,13 @@ jobs:
           sparse-checkout: .github/scripts/publish_telegram.py
           sparse-checkout-cone-mode: false
 
+      # Only the build artifact. Unfiltered, this also pulls the .dockerbuild
+      # record that build-push-action uploads, which fails to extract and takes
+      # the job down with it.
       - name: Download build artifacts.
         uses: actions/download-artifact@v7
         with:
+          pattern: Telegram Linux Release *
           path: artifacts
 
       - uses: actions/setup-python@v6
