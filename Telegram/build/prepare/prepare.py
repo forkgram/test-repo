@@ -1101,7 +1101,10 @@ win32:
 win64:
     SET "TOOLCHAIN=x86_64-win64-vs17"
 winarm:
-    SET "TOOLCHAIN=arm64-win64-vs17-v145"
+    # Not the -v145 upstream names here: libvpx only accepts a -clangcl suffix,
+    # and v1.14.1 knows no toolchain past vs17 at all, which it maps to the v143
+    # toolset the ARM64 image still carries.
+    SET "TOOLCHAIN=arm64-win64-vs17"
 win:
 depends:patches/build_libvpx_win.sh
     bash --login ../patches/build_libvpx_win.sh
