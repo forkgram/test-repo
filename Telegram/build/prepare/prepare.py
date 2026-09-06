@@ -454,9 +454,14 @@ if customRunCommand:
     finish(0)
 
 stage('patches', """
-    git clone https://github.com/desktop-app/patches.git
+    # The pinned commit is not reachable from any branch of the patches
+    # repository, so a plain clone never has it and a checkout of it fails.
+    # Ask the server for that single commit by its hash instead.
+    git init patches
     cd patches
-    git checkout 30831e63f41907f6dca32eab9ad96ac0bdb88f03
+    git remote add origin https://github.com/desktop-app/patches.git
+    git fetch --depth 1 origin 30831e63f41907f6dca32eab9ad96ac0bdb88f03
+    git checkout FETCH_HEAD
 mac:
     git clone https://github.com/desktop-app/qt6_highsierra_patches.git qt6_highsierra
     cd qt6_highsierra
