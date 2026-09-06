@@ -6,8 +6,8 @@ on:
       arch:
         description: 'Which architectures to build.'
         type: choice
-        options: [both, x64, x86]
-        default: both
+        options: [all, x64, x86, arm64]
+        default: all
       only_cache:
         description: 'Only prepare libraries and warm the cache.'
         type: boolean
@@ -54,40 +54,64 @@ jobs:
 
   windows-release:
     name: Windows ${{ matrix.arch }} Release
-    runs-on: windows-latest
+    # ARM64 has to be built natively. Qt's configure builds its own host tools -
+    # moc, rcc, qmake - and then runs them, and prepare.py passes it no
+    # -qt-host-path, so an x64 runner cross-compiling to ARM64 cannot get
+    # through the Qt stage at all. windows-11-vs2026-arm is the ARM64 image
+    # carrying Visual Studio 2026, whose v145 toolset is the one prepare.py
+    # forces for the winarm lzma and breakpad projects; the plain
+    # windows-11-arm label only migrates off Visual Studio 2022 at the end of
+    # September 2026 and can be used from then on.
+    runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-vs2026-arm' || 'windows-latest' }}
     timeout-minutes: 360
 
     strategy:
-      # Let one architecture finish even if the other fails - they share nothing
+      # Let one architecture finish even if another fails - they share nothing
       # but the release they upload to.
       fail-fast: false
       matrix:
-        arch: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.arch != 'both') && format('["{0}"]', inputs.arch) || '["x64","x86"]') }}
+        arch: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.arch != 'all') && format('["{0}"]', inputs.arch) || '["x64","x86","arm64"]') }}
 
     env:
       PREPARE_PATH: "Telegram/build/prepare/prepare.py"
-      # Everything the two architectures name differently. prepare.py keeps 64-bit
-      # libraries in a win64 subdirectory and 32-bit ones directly in Libraries,
-      # and the release file names follow the same split.
-      BUILD_TARGET: ${{ matrix.arch == 'x64' && 'win64' || 'win' }}
-      MSVC_ARCH: ${{ matrix.arch == 'x64' && 'x64' || 'x64_x86' }}
+      # Everything the three architectures name differently. prepare.py keeps
+      # 64-bit libraries in a win64 subdirectory and both the 32-bit and the
+      # ARM64 ones directly in Libraries, and the release file names follow the
+      # same split. Every ternary below keeps its empty value on the right: a
+      # GitHub expression falls through `cond && a` whenever `a` is falsy, so an
+      # empty string can never be the taken branch.
+      BUILD_TARGET: ${{ matrix.arch == 'x64' && 'win64' || matrix.arch == 'arm64' && 'winarm' || 'win' }}
+      MSVC_ARCH: ${{ matrix.arch == 'x64' && 'x64' || matrix.arch == 'arm64' && 'arm64' || 'x64_x86' }}
       LIBS_SUBDIR: ${{ matrix.arch == 'x64' && '\win64' || '' }}
-      ISS_TARGET: ${{ matrix.arch == 'x64' && 'win64' || 'win32' }}
-      UPD_PREFIX: ${{ matrix.arch == 'x64' && 'tx64upd' || 'tupdate' }}
-      SETUP_PREFIX: ${{ matrix.arch == 'x64' && 'tsetup-x64' || 'tsetup' }}
-      MODULES_ARCH: ${{ matrix.arch == 'x64' && 'x64' || 'x86' }}
+      ISS_TARGET: ${{ matrix.arch == 'x64' && 'win64' || matrix.arch == 'arm64' && 'winarm' || 'win32' }}
+      UPD_PREFIX: ${{ matrix.arch == 'x64' && 'tx64upd' || matrix.arch == 'arm64' && 'tarm64upd' || 'tupdate' }}
+      SETUP_PREFIX: ${{ matrix.arch == 'x64' && 'tsetup-x64' || matrix.arch == 'arm64' && 'tsetup-arm64' || 'tsetup' }}
+      MODULES_ARCH: ${{ matrix.arch == 'x64' && 'x64' || matrix.arch == 'arm64' && 'arm64' || 'x86' }}
+      # Windows on ARM starts at Windows 10, so the whole Windows 7 compatibility
+      # layer - the YY-Thunks object prepare.py fetches and the qtbase backport
+      # it overlays - is only prepared and linked for the two x86 targets.
+      # CMakeLists.txt ignores DESKTOP_APP_WIN7_COMPAT on winarm anyway.
+      WIN7_OPTION: ${{ matrix.arch != 'arm64' && 'win7' || '' }}
+      WIN7_FLAG: ${{ matrix.arch != 'arm64' && '-D DESKTOP_APP_WIN7_COMPAT=ON' || '' }}
+      # prepare.py builds the ARM64 lzma and breakpad projects with an explicit
+      # PlatformToolset=v145, and run_cmake.py leaves -AARM64 on the generator's
+      # default toolset, so let vcvars use the default one there too rather than
+      # pinning it to the 14.44 the x86 targets are built with.
+      MSVC_TOOLSET: ${{ matrix.arch != 'arm64' && '14.44' || '' }}
       # Final GitHub-release asset names, matching the fork's existing releases so
       # successive versions line up. x86 is labelled x32, as the fork names it.
-      ASSET_INSTALLER: ${{ matrix.arch == 'x64' && 'Telegram.Windows.x64.Installer.exe' || 'Telegram.Windows.x32.Installer.exe' }}
-      ASSET_PORTABLE: ${{ matrix.arch == 'x64' && 'Telegram.zip' || 'Telegram_x86.zip' }}
+      ASSET_INSTALLER: ${{ matrix.arch == 'x64' && 'Telegram.Windows.x64.Installer.exe' || matrix.arch == 'arm64' && 'Telegram.Windows.arm64.Installer.exe' || 'Telegram.Windows.x32.Installer.exe' }}
+      ASSET_PORTABLE: ${{ matrix.arch == 'x64' && 'Telegram.zip' || matrix.arch == 'arm64' && 'Telegram_arm64.zip' || 'Telegram_x86.zip' }}
       # A scheduled run only warms caches - never builds Telegram or publishes.
       ONLY_CACHE: ${{ (github.event_name == 'schedule' || inputs.only_cache) && 'true' || 'false' }}
       ENABLE_LTO: ${{ inputs.lto && 'true' || 'false' }}
       # qt_version.py defaults x64 to Qt 5.15, but lib_ui calls the Qt 6 only
       # accessibility API (QAccessibleAttributesInterface) with no version guard,
       # so Qt 5 cannot compile this fork at all. Both prepare.py and configure.py
-      # read the flag, and on a tag push it has to stay on.
-      QT_OPTION: ${{ (github.event_name != 'workflow_dispatch' || inputs.qt6) && 'qt6' || '' }}
+      # read the flag, and on a tag push it has to stay on. ARM64 is pinned on
+      # regardless of the input: qt_version.py picks Qt 6 for that architecture
+      # whatever it is passed, and an off flag would only mislabel the Qt cache.
+      QT_OPTION: ${{ (matrix.arch == 'arm64' || github.event_name != 'workflow_dispatch' || inputs.qt6) && 'qt6' || '' }}
       PUBLISH_RELEASE: ${{ (inputs.publish_release || startsWith(github.ref, 'refs/tags/')) && 'true' || 'false' }}
 
     defaults:
@@ -255,7 +279,24 @@ jobs:
         with:
           arch: ${{ env.MSVC_ARCH }}
           sdk: ${{ env.SDK }}
-          toolset: '14.44'
+          toolset: ${{ env.MSVC_TOOLSET }}
+
+      # prepare.py reads its target off this one variable and stops with a bare
+      # "run from Native Tools Command Prompt" when it holds anything else. Say
+      # so here rather than an hour into the libraries build.
+      - name: Check the target architecture.
+        shell: bash
+        env:
+          EXPECTED: ${{ matrix.arch == 'x64' && 'x64' || matrix.arch == 'arm64' && 'arm64' || 'x86' }}
+        run: |
+          # Read it out of the environment rather than as $Platform: the name
+          # comes from Windows, and bash here is case sensitive.
+          actual=$(env | sed -n 's/^[Pp]latform=//p' | head -1)
+          echo "vcvars set Platform=$actual, prepare.py needs $EXPECTED"
+          [ "$actual" = "$EXPECTED" ] || {
+            echo "::error::wrong target architecture: ${actual:-<unset>}"
+            exit 1
+          }
 
       - name: NuGet sources.
         run: |
@@ -371,6 +412,7 @@ jobs:
         shell: bash
         run: |
           [ -d "$LibrariesPath" ] || exit 0
+          [ -n "$WIN7_OPTION" ] || { echo "no Windows 7 layer on this target"; exit 0; }
           if [ ! -f "$LibrariesPath/yy_thunks/objs/$MODULES_ARCH/YY_Thunks_for_Win7.obj" ]; then
             rm -f "$LibrariesPath"/cache_keys/yy_thunks*
             echo "yy_thunks object missing, dropped its cache key"
@@ -383,7 +425,7 @@ jobs:
         # A step-level timeout fails the step instead and lets them run.
         timeout-minutes: 285
         run: |
-          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent %QT_OPTION% win7
+          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent %QT_OPTION% %WIN7_OPTION%
 
       - name: Free up some disk space.
         if: always()
@@ -451,7 +493,7 @@ jobs:
           rem timestamps make MSBuild rebuild everything - which throws away the
           rem restored build tree. Reuse the tree when it was configured with the
           rem same flags, and record them so a changed flag still reconfigures.
-          set "CFG_FLAGS=qt=%QT_OPTION% lto=%LTO_FLAG% target=%BUILD_TARGET% win7=on nodebug=1"
+          set "CFG_FLAGS=qt=%QT_OPTION% lto=%LTO_FLAG% target=%BUILD_TARGET% win7=%WIN7_FLAG% nodebug=1"
           set "CFG_MARKER=..\out\.ci_configure_flags"
           set "REUSE_TREE=0"
           if exist ..\out\CMakeCache.txt if exist "%CFG_MARKER%" (
@@ -470,7 +512,7 @@ jobs:
           -D CMAKE_CONFIGURATION_TYPES=Release ^
           -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
           -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF ^
-          -D DESKTOP_APP_WIN7_COMPAT=ON ^
+          %WIN7_FLAG% ^
           -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
           %LTO_FLAG% || exit /b 1
 
@@ -494,8 +536,16 @@ jobs:
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String("${{ secrets.WIN_CODESIGN_PFX }}"))
           echo "CODESIGN_PFX=$pfx" >> $env:GITHUB_ENV
 
-          $tool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+          # The SDK ships one signtool per host architecture. On the ARM64
+          # image the x64 one exists too but would only run emulated, so look
+          # for the native build first and fall back to whatever is there.
+          $hostDir = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+          $tool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\$hostDir\signtool.exe" -ErrorAction SilentlyContinue |
             Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $tool) {
+            $tool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\*\signtool.exe" -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending | Select-Object -First 1
+          }
           if (-not $tool) { Write-Error 'signtool.exe not found'; exit 1 }
           echo "SIGNTOOL=$($tool.FullName)" >> $env:GITHUB_ENV
           echo "Using $($tool.FullName)"
@@ -563,12 +613,20 @@ jobs:
         env:
           CODESIGN_PASSWORD: ${{ secrets.WIN_CODESIGN_PASSWORD }}
         run: |
-          choco install innosetup -y --no-progress
           $release = "$env:TBUILD\$env:REPO_NAME\out\Release"
           $iss = "$env:TBUILD\$env:REPO_NAME\Telegram\build\setup.iss"
 
-          $iscc = Get-ChildItem 'C:\Program Files*\Inno Setup*\ISCC.exe' -ErrorAction SilentlyContinue |
-            Sort-Object FullName -Descending | Select-Object -First 1
+          function Find-Iscc {
+            Get-ChildItem 'C:\Program Files*\Inno Setup*\ISCC.exe' -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending | Select-Object -First 1
+          }
+          # The ARM64 image ships Inno Setup already; installing the package on
+          # top of it would only add an emulated x64 copy.
+          $iscc = Find-Iscc
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = Find-Iscc
+          }
           if (-not $iscc) { Write-Error 'ISCC.exe not found'; exit 1 }
           echo "Using $($iscc.FullName)"
 

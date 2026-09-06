@@ -1602,8 +1602,11 @@ win:
     jom -j%NUMBER_OF_PROCESSORS% install
 """)
 else: # qt > '6'
+    # Windows on ARM starts at Windows 10, so the Windows 7 backport has
+    # nothing to fix there - and its qtbase overlay is written for the x86/x64
+    # ANGLE path. Keep the whole stage off the winarm target.
     stage('qt6windows7', """
-win:
+win32_win64:
     git clone https://github.com/qr243vbi/qt6windows7.git
     cd qt6windows7
     git checkout aa73dc1aa33989d09e5823532bccb1d31e39bb64
@@ -1653,8 +1656,10 @@ mac:
     cmake --install .
 win:
     cd qtbase
+win32_win64:
     echo Applying Qt6 Windows 7 compatibility patches...
     xcopy /E /Y "%LIBS_DIR%\\qt6windows7\\qtbase\\src" src\\
+win:
     setlocal enabledelayedexpansion
     for /r %%i in (..\\..\\patches\\qtbase_%QT%\\*) do (
         git apply %%i -v
