@@ -56,21 +56,25 @@ index 076a853..9e8bb95 100644
  
  int32_t __stdcall WINRT_IMPL_RoOriginateLanguageException(int32_t error, void* message, void* exception) noexcept {
 diff --git a/base/platform/win/base_windows_wrl.cpp b/base/platform/win/base_windows_wrl.cpp
-index 38e08c0..636ff0f 100644
+index 38e08c0..27978d7 100644
 --- a/base/platform/win/base_windows_wrl.cpp
 +++ b/base/platform/win/base_windows_wrl.cpp
-@@ -101,8 +101,6 @@ bool SupportsWRL() {
+@@ -101,7 +101,11 @@ bool SupportsWRL() {
  
  } // namespace base::Platform
  
 -#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
--
++// Windows on ARM starts at Windows 10, so the real implementations are always
++// there and runtimeobject.lib imports them. Defining them here as well is what
++// the loader needs on Windows 7, and on ARM64 it only makes the link fail with
++// LNK2005.
++#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0) || !defined(_M_ARM64)
+ 
  namespace P = base::Platform;
  
- extern "C" {
-@@ -234,5 +232,3 @@ RoOriginateError(
- }
+@@ -235,4 +239,4 @@ RoOriginateError(
  
  } // extern "C"
--
+ 
 -#endif // Qt < 6.0.0
++#endif // Qt < 6.0.0 || !_M_ARM64
