@@ -1,24 +1,42 @@
 diff --git a/external/qt/CMakeLists.txt b/external/qt/CMakeLists.txt
-index 577b67b..6754d23 100644
+index 9845f55..a1a0eaa 100644
 --- a/external/qt/CMakeLists.txt
 +++ b/external/qt/CMakeLists.txt
-@@ -215,8 +215,9 @@ if (WIN32)
+@@ -215,9 +215,27 @@ if (WIN32)
              D3D12
              SetupAPI
              Shcore
 -            Synchronization
 -            WindowsApp
-+            Secur32
-+            WinHttp
-+            ncrypt
          )
++        if (build_winarm)
++            # Windows on ARM starts at Windows 10, where both umbrella import
++            # libraries exist - and qtbase is built there without the Windows 7
++            # overlay, so it imports UI Automation and ICU directly and
++            # WindowsApp is what resolves them.
++            target_link_libraries(external_qt
++            INTERFACE
++                Synchronization
++                WindowsApp
++            )
++        else()
++            # Windows 7 has neither umbrella library, so name what qtbase
++            # actually uses out of them.
++            target_link_libraries(external_qt
++            INTERFACE
++                Secur32
++                WinHttp
++                ncrypt
++            )
++        endif()
      else()
          target_link_libraries(external_qt
+         INTERFACE
 diff --git a/options_win.cmake b/options_win.cmake
-index c2d66cf..ea978c2 100644
+index dd86342..2075869 100644
 --- a/options_win.cmake
 +++ b/options_win.cmake
-@@ -52,6 +52,7 @@ if (MSVC)
+@@ -53,6 +53,7 @@ if (MSVC)
          /wd4702 # unreachable code
          /wd4310 # cast truncates constant value
          /wd4127 # conditional expression is constant
@@ -26,7 +44,7 @@ index c2d66cf..ea978c2 100644
  
          # Taken from Qt 6.
          # https://developercommunity.visualstudio.com/content/problem/139261/msvc-incorrectly-defines-cplusplus.html
-@@ -138,6 +139,7 @@ INTERFACE
+@@ -140,6 +141,7 @@ INTERFACE
      Dwmapi
      UxTheme
      Wtsapi32
