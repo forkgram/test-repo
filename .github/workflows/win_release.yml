@@ -413,16 +413,27 @@ jobs:
         run: |
           [ -d "$LibrariesPath" ] || exit 0
 
-          # A cache saved before the cleanup step learned to keep the install
-          # prefix carries the libraries but not the pkg-config entries the
-          # later stages resolve them through, and their keys still read done.
-          pkgconfig="$LibrariesPath/local/lib/pkgconfig"
-          for pair in dav1d:dav1d opus:opus openh264:openh264 libvpx:vpx libavif:libavif libde265:libde265 libheif:libheif libjxl:libjxl; do
-            if [ ! -f "$pkgconfig/${pair##*:}.pc" ]; then
-              rm -f "$LibrariesPath/cache_keys/${pair%%:*}"
-              echo "${pair##*:}.pc is missing, dropped the ${pair%%:*} cache key"
-            fi
-          done
+          # A cache saved before the cleanup step learned to keep these files
+          # carries the libraries but not what the later stages reach them
+          # through, while their keys still read done. Name one artifact per
+          # stage and let the stage run again when it is gone.
+          while read -r stage artifact; do
+            [ -n "$stage" ] || continue
+            [ -f "$LibrariesPath/$artifact" ] && continue
+            rm -f "$LibrariesPath/cache_keys/$stage"
+            echo "$artifact is missing, dropped the $stage cache key"
+          done <<'ARTIFACTS'
+          dav1d local/lib/pkgconfig/dav1d.pc
+          opus local/lib/pkgconfig/opus.pc
+          openh264 local/lib/pkgconfig/openh264.pc
+          libvpx local/lib/pkgconfig/vpx.pc
+          libavif local/lib/pkgconfig/libavif.pc
+          libde265 local/lib/pkgconfig/libde265.pc
+          libheif local/lib/pkgconfig/libheif.pc
+          libjxl local/lib/pkgconfig/libjxl.pc
+          nv-codec-headers nv-codec-headers/Makefile
+          gas-preprocessor gas-preprocessor/gas-preprocessor.pl
+          ARTIFACTS
 
           if [ -n "$WIN7_OPTION" ] &&
              [ ! -f "$LibrariesPath/yy_thunks/objs/$MODULES_ARCH/YY_Thunks_for_Win7.obj" ]; then
@@ -440,15 +451,17 @@ jobs:
           %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent %QT_OPTION% %WIN7_OPTION%
 
       # Everything a later stage reads has to survive this, or a resumed build
-      # breaks in a way a from-scratch one never does: the whole install prefix
-      # stays, because that is what the stages hand each other - ffmpeg finds
-      # dav1d, opus, libvpx and openh264 through the .pc files in there.
+      # breaks in a way a from-scratch one never does. The install prefix stays
+      # whole - that is what most stages hand each other, ffmpeg resolving
+      # dav1d, opus, libvpx and openh264 through the .pc files in it - and so do
+      # nv-codec-headers and gas-preprocessor, which ffmpeg's script instead
+      # runs out of their own directories. Both are tiny.
       - name: Free up some disk space.
         if: always()
         shell: bash
         run: |
           [ -d "$LibrariesPath" ] || { echo "nothing to clean up"; exit 0; }
-          find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/local/*' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -path '*/qt6windows7/*' -o -path '*/yy_thunks/*' ')' -type f ')' -o -empty ')' -delete || true
+          find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/local/*' -o -path '*/gas-preprocessor/*' -o -path '*/nv-codec-headers/*' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -path '*/qt6windows7/*' -o -path '*/yy_thunks/*' ')' -type f ')' -o -empty ')' -delete || true
 
       - name: Save ThirdParty cache.
         if: always()
