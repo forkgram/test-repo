@@ -6,8 +6,8 @@ on:
       arch:
         description: 'Which architectures to build.'
         type: choice
-        options: [both, x64, x86]
-        default: both
+        options: [all, x64, x86, arm64]
+        default: all
       only_cache:
         description: 'Only prepare libraries and warm the cache.'
         type: boolean
@@ -44,26 +44,41 @@ jobs:
 
   windows-release:
     name: Windows ${{ matrix.arch }} Release
-    runs-on: windows-latest
+    # ARM64 is built natively: prepare.py gives Qt's configure no -qt-host-path,
+    # so it builds moc, rcc and qmake and then runs them. The vs2026 image
+    # already carries the v145 toolset prepare.py forces for the winarm lzma
+    # and breakpad projects, and ATL for ARM64, so unlike win.yml this needs no
+    # vs_buildtools step. Once the September 2026 migration lands, plain
+    # windows-11-arm is the same image.
+    runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-vs2026-arm' || 'windows-latest' }}
     timeout-minutes: 360
 
     strategy:
       fail-fast: false
       matrix:
-        arch: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.arch != 'both') && format('["{0}"]', inputs.arch) || '["x64","x86"]') }}
+        arch: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.arch != 'all') && format('["{0}"]', inputs.arch) || '["x64","x86","arm64"]') }}
 
     env:
       PREPARE_PATH: "Telegram/build/prepare/prepare.py"
-      BUILD_TARGET: ${{ matrix.arch == 'x64' && 'win64' || 'win' }}
-      MSVC_ARCH: ${{ matrix.arch == 'x64' && 'x64' || 'x64_x86' }}
+      BUILD_TARGET: ${{ matrix.arch == 'x64' && 'win64' || matrix.arch == 'arm64' && 'winarm' || 'win' }}
+      MSVC_ARCH: ${{ matrix.arch == 'x64' && 'x64' || matrix.arch == 'arm64' && 'arm64' || 'x64_x86' }}
       LIBS_SUBDIR: ${{ matrix.arch == 'x64' && '\win64' || '' }}
-      ISS_TARGET: ${{ matrix.arch == 'x64' && 'win64' || 'win32' }}
-      UPD_PREFIX: ${{ matrix.arch == 'x64' && 'td-update-win-x64-' || 'td-update-win-x86-' }}
-      SETUP_PREFIX: ${{ matrix.arch == 'x64' && 'tsetup-x64' || 'tsetup' }}
-      MODULES_ARCH: ${{ matrix.arch == 'x64' && 'x64' || 'x86' }}
+      ISS_TARGET: ${{ matrix.arch == 'x64' && 'win64' || matrix.arch == 'arm64' && 'winarm' || 'win32' }}
+      UPD_PREFIX: ${{ matrix.arch == 'x64' && 'td-update-win-x64-' || matrix.arch == 'arm64' && 'td-update-win-arm-' || 'td-update-win-x86-' }}
+      SETUP_PREFIX: ${{ matrix.arch == 'x64' && 'tsetup-x64' || matrix.arch == 'arm64' && 'tsetup-arm64' || 'tsetup' }}
+      MODULES_ARCH: ${{ matrix.arch == 'x64' && 'x64' || matrix.arch == 'arm64' && 'arm64' || 'x86' }}
+      # Windows on ARM starts at Windows 10, so prepare.py scopes the whole
+      # Windows 7 layer - YY-Thunks, the qtbase backport and ANGLE - to the two
+      # x86 targets, and the root CMakeLists leaves DESKTOP_APP_WIN7_BASELINE
+      # off there. Nothing below may then ask for its outputs.
+      WIN7_LAYER: ${{ matrix.arch != 'arm64' && 'true' || '' }}
+      # prepare.py builds the ARM64 lzma and breakpad projects with an explicit
+      # PlatformToolset=v145 and run_cmake.py leaves -AARM64 on the generator's
+      # default toolset, so let vcvars use the default one there too.
+      MSVC_TOOLSET: ${{ matrix.arch != 'arm64' && '14.44' || '' }}
       # Release asset names as the fork labels them (x86 = x32).
-      ASSET_INSTALLER: ${{ matrix.arch == 'x64' && 'Telegram.Windows.x64.Installer.exe' || 'Telegram.Windows.x32.Installer.exe' }}
-      ASSET_PORTABLE: ${{ matrix.arch == 'x64' && 'Telegram.zip' || 'Telegram_x86.zip' }}
+      ASSET_INSTALLER: ${{ matrix.arch == 'x64' && 'Telegram.Windows.x64.Installer.exe' || matrix.arch == 'arm64' && 'Telegram.Windows.arm64.Installer.exe' || 'Telegram.Windows.x32.Installer.exe' }}
+      ASSET_PORTABLE: ${{ matrix.arch == 'x64' && 'Telegram.zip' || matrix.arch == 'arm64' && 'Telegram_arm64.zip' || 'Telegram_x86.zip' }}
       ONLY_CACHE: ${{ (github.event_name == 'schedule' || inputs.only_cache) && 'true' || 'false' }}
       ENABLE_LTO: ${{ inputs.lto && 'true' || 'false' }}
       PUBLISH_RELEASE: ${{ (inputs.publish_release || startsWith(github.ref, 'refs/tags/')) && 'true' || 'false' }}
@@ -238,7 +253,23 @@ jobs:
         with:
           arch: ${{ env.MSVC_ARCH }}
           sdk: ${{ env.SDK }}
-          toolset: '14.44'
+          toolset: ${{ env.MSVC_TOOLSET }}
+
+      # prepare.py reads its target off this one variable and stops with a bare
+      # "run from Native Tools Command Prompt" when it holds anything else.
+      - name: Check the target architecture.
+        shell: bash
+        env:
+          EXPECTED: ${{ matrix.arch == 'x64' && 'x64' || matrix.arch == 'arm64' && 'arm64' || 'x86' }}
+        run: |
+          # Read it out of the environment rather than as $Platform: the name
+          # comes from Windows, and bash here is case sensitive.
+          actual=$(env | sed -n 's/^[Pp]latform=//p' | head -1)
+          echo "vcvars set Platform=$actual, prepare.py needs $EXPECTED"
+          [ "$actual" = "$EXPECTED" ] || {
+            echo "::error::wrong target architecture: ${actual:-<unset>}"
+            exit 1
+          }
 
       - name: NuGet sources.
         run: |
@@ -342,10 +373,12 @@ jobs:
             rm -f "$LibrariesPath"/cache_keys/$1
             echo "$2, dropped the $1 cache key"
           }
-          [ -f "$LibrariesPath/yy_thunks/objs/$MODULES_ARCH/YY_Thunks_for_Win7.lib" ] \
-            || drop yy_thunks "YY-Thunks library missing"
-          [ -f "$LibrariesPath/tg_angle/out/Release/tg_angle.lib" ] \
-            || drop tg_angle "ANGLE library missing"
+          if [ -n "$WIN7_LAYER" ]; then
+            [ -f "$LibrariesPath/yy_thunks/objs/$MODULES_ARCH/YY_Thunks_for_Win7.lib" ] \
+              || drop yy_thunks "YY-Thunks library missing"
+            [ -f "$LibrariesPath/tg_angle/out/Release/tg_angle.lib" ] \
+              || drop tg_angle "ANGLE library missing"
+          fi
           # prepare.py rebuilds a stage whose folder the sweep emptied, but
           # nv-codec-headers keeps its headers, so the folder survives without
           # the makefile the ffmpeg build script installs from. The .pc files
@@ -512,9 +545,11 @@ jobs:
 
           # Not $args: that is an automatic variable in PowerShell.
           $packerArgs = @('-version', $env:AppVersion, '-path', 'Telegram.exe', '-path', 'Updater.exe')
-          $d3d = "modules\${env:MODULES_ARCH}\d3d\d3dcompiler_47.dll"
-          if (-not (Test-Path $d3d)) { Write-Error "missing $d3d for ANGLE"; exit 1 }
-          $packerArgs += @('-path', $d3d)
+          if ($env:WIN7_LAYER) {
+            $d3d = "modules\${env:MODULES_ARCH}\d3d\d3dcompiler_47.dll"
+            if (-not (Test-Path $d3d)) { Write-Error "missing $d3d for ANGLE"; exit 1 }
+            $packerArgs += @('-path', $d3d)
+          }
           $packerArgs += @('-target', $env:BUILD_TARGET)
           $packerArgs += @('-channel', $env:UPD_CHANNEL)
           $packerArgs += @('-keys-loc', "$env:TBUILD\$env:REPO_NAME\Telegram\Resources\update")
@@ -567,11 +602,13 @@ jobs:
           New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
 
           Copy-Item (Join-Path $release 'Telegram.exe') $portableDir
-          $d3d = Join-Path $release "modules\${env:MODULES_ARCH}\d3d\d3dcompiler_47.dll"
-          if (-not (Test-Path $d3d)) { Write-Error "missing $d3d for ANGLE"; exit 1 }
-          $modules = Join-Path $portableDir "modules\${env:MODULES_ARCH}\d3d"
-          New-Item -ItemType Directory -Path $modules -Force | Out-Null
-          Copy-Item $d3d $modules
+          if ($env:WIN7_LAYER) {
+            $d3d = Join-Path $release "modules\${env:MODULES_ARCH}\d3d\d3dcompiler_47.dll"
+            if (-not (Test-Path $d3d)) { Write-Error "missing $d3d for ANGLE"; exit 1 }
+            $modules = Join-Path $portableDir "modules\${env:MODULES_ARCH}\d3d"
+            New-Item -ItemType Directory -Path $modules -Force | Out-Null
+            Copy-Item $d3d $modules
+          }
 
           Set-Location $deploy
           & 7z a -mx9 $env:ASSET_PORTABLE Telegram\
